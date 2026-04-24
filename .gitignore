@@ -18,3 +18,8 @@ evals/*
 .envrc
 .env
 data/
+tutorial_notebooks/*
+tutorial_notebooks/*
+*png
+preference_optimization/evals/*
+preference_optimization/diversity_evals/evals/*

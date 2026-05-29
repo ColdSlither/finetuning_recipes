@@ -17,8 +17,9 @@ from pydantic import BaseModel, Field, create_model
 from openai import AsyncOpenAI
 import outlines
 
-JUDGE_MODEL = "deepseek/deepseek-v4-flash"
-SEMAPHORE = 50
+JUDGE_MODEL = "deepseek/deepseek-v4-pro"
+SEMAPHORE = 10
+MAX_RETRIES = 5
 
 JUDGE_PROMPT = """\
 You are an expert evaluator comparing AI assistant responses on research and academic questions.
@@ -168,11 +169,23 @@ async def judge_one(sem: asyncio.Semaphore, idx: int, record: dict) -> dict:
         responses=responses_block,
     )
 
+    result = None
     async with sem:
-        raw = await model(prompt, ComparisonResult, max_tokens=1024)
-        result = (
-            ComparisonResult.model_validate_json(raw) if isinstance(raw, str) else raw
-        )
+        for attempt in range(MAX_RETRIES):
+            try:
+                raw = await model(prompt, ComparisonResult, max_tokens=1024)
+                result = (
+                    ComparisonResult.model_validate_json(raw)
+                    if isinstance(raw, str)
+                    else raw
+                )
+                break
+            except Exception as e:
+                if attempt == MAX_RETRIES - 1:
+                    raise
+                print(f"[{idx+1}/{total}] judge retry {attempt+1}: {e}")
+
+    assert result is not None
 
     winning_model = label_to_model[result.winner]
     scores = {label_to_model[l]: getattr(result, f"score_{l}") for l in labels}

@@ -2,25 +2,19 @@ import argparse
 import random
 from functools import lru_cache
 
-import outlines
-from text_albumentations import OutlinesModel, run_augmentation, run_batch_augmentation
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from text_albumentations import LocalHFModel, run_augmentation, run_batch_augmentation
 
 from main import (
     PROB_TO_RUN_REPHRASE,
     PROB_TO_RUN_STEP,
-    bullet_augmentation,
+    SINGLE_CHUNK_TASKS,
     chunk_text,
     comparison_augmentation,
-    continuation_augmentation,
     load_texts_from_jsonl,
-    qa_pair_augmentation,
-    rephrase_augmentation,
     retrieval_augmentation,
     save_dataset,
+    selected_single_chunk_tasks,
     try_generate,
-    triplet_augmentation,
-    truncate_dataset,
 )
 
 MODEL_NAME = "google/gemma-3-1b-it"
@@ -34,16 +28,11 @@ def batched(items, batch_size: int):
 @lru_cache(maxsize=1)
 def get_batch_runtime():
     print(f"loading_transformers_model model_name={MODEL_NAME}")
-    hf_model = AutoModelForCausalLM.from_pretrained(
+    return LocalHFModel(
         MODEL_NAME,
         torch_dtype="auto",
         device_map="auto",
     )
-    print("loading_tokenizer")
-    hf_tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-    print("building_outlines_model")
-    model = outlines.from_transformers(hf_model, hf_tokenizer)
-    return OutlinesModel(model, max_tokens_parameter="max_new_tokens")
 
 
 def parse_args():
@@ -86,22 +75,26 @@ def parse_args():
         default=42,
         help="Random seed used for task sampling",
     )
+    parser.add_argument(
+        "--task-preset",
+        choices=["expanded", "legacy"],
+        default="expanded",
+        help="Use the prior-training single-passage task set without continuation",
+    )
     return parser.parse_args()
 
 
-def generate_examples_for_chunks_batch(chunks: list[str], batch_size: int):
+def generate_examples_for_chunks_batch(
+    chunks: list[str],
+    batch_size: int,
+    task_preset: str = "expanded",
+):
     runtime = get_batch_runtime()
     dataset = []
 
-    single_chunk_tasks = [
-        ("bullets", bullet_augmentation, PROB_TO_RUN_STEP),
-        ("qa_pairs", qa_pair_augmentation, PROB_TO_RUN_STEP),
-        ("rephrase", rephrase_augmentation, PROB_TO_RUN_REPHRASE),
-        ("continuation", continuation_augmentation, PROB_TO_RUN_STEP),
-        ("triplets", triplet_augmentation, PROB_TO_RUN_STEP),
-    ]
-
-    for task_name, augmentation, probability in single_chunk_tasks:
+    for task_name, augmentation, probability in selected_single_chunk_tasks(
+        task_preset
+    ):
         selected_chunks = [
             chunk for chunk in chunks
             if random.random() < probability
@@ -164,6 +157,12 @@ def main():
     texts = load_texts_from_jsonl(args.input_jsonl)
     print(f"Loaded {len(texts)} texts from {args.input_jsonl}")
     print(f"batch_model_name={MODEL_NAME}")
+    print(f"task_preset={args.task_preset}")
+    print(
+        "single_chunk_tasks="
+        f"{len(selected_single_chunk_tasks(args.task_preset))}/"
+        f"{len(SINGLE_CHUNK_TASKS)}"
+    )
 
     total_chunks = 0
     total_examples = 0
@@ -185,18 +184,15 @@ def main():
         chunks = chunks[: int(len(chunks) // 2)]
         print(f"Running batch generation over {len(chunks)} chunks")
 
-        dataset = generate_examples_for_chunks_batch(chunks, args.batch_size)
+        dataset = generate_examples_for_chunks_batch(
+            chunks,
+            args.batch_size,
+            args.task_preset,
+        )
         print(
             f"Generated {len(dataset)} single-chunk rows for text {text_idx} "
-            f"before truncation"
+            f"before saving"
         )
-
-        if args.max_rows is not None:
-            remaining_rows = args.max_rows - total_examples
-            if remaining_rows <= 0:
-                print("Reached max row limit before saving more rows. Stopping.")
-                break
-            dataset = truncate_dataset(dataset, remaining_rows)
 
         total_examples += len(dataset)
         save_dataset(dataset, args.output_jsonl)
@@ -209,18 +205,8 @@ def main():
         cross_chunk_dataset = generate_cross_chunk_examples(chunks)
         print(
             f"Generated {len(cross_chunk_dataset)} cross-chunk rows for text "
-            f"{text_idx} before truncation"
+            f"{text_idx} before saving"
         )
-
-        if args.max_rows is not None:
-            remaining_rows = args.max_rows - total_examples
-            if remaining_rows <= 0:
-                print("Reached max row limit before saving more rows. Stopping.")
-                break
-            cross_chunk_dataset = truncate_dataset(
-                cross_chunk_dataset,
-                remaining_rows,
-            )
 
         total_examples += len(cross_chunk_dataset)
         save_dataset(cross_chunk_dataset, args.output_jsonl)

@@ -9,7 +9,6 @@ from text_albumentations import (
 from text_albumentations.tasks import (
     bullet_augmentation,
     comparison_augmentation,
-    continuation_augmentation,
     qa_pair_augmentation,
     rephrase_augmentation,
     retrieval_augmentation,
@@ -20,6 +19,22 @@ from text_albumentations.tasks import (
 PROB_TO_RUN_STEP = 0.25
 PROB_TO_RUN_REPHRASE = 0.1
 RUNTIME = None
+SINGLE_CHUNK_TASKS = [
+    ("bullets", bullet_augmentation, PROB_TO_RUN_STEP),
+    ("qa_pairs", qa_pair_augmentation, PROB_TO_RUN_STEP),
+    ("rephrase", rephrase_augmentation, PROB_TO_RUN_REPHRASE),
+    ("triplets", triplet_augmentation, PROB_TO_RUN_STEP),
+]
+SINGLE_CHUNK_TASK_PROBABILITIES = {
+    task_name: probability
+    for task_name, _, probability in SINGLE_CHUNK_TASKS
+}
+LEGACY_SINGLE_CHUNK_TASK_NAMES = {
+    "bullets",
+    "qa_pairs",
+    "rephrase",
+    "triplets",
+}
 
 
 def get_runtime():
@@ -82,55 +97,34 @@ def try_generate(label: str, fn):
         return []
 
 
-def generate_examples_for_chunk(chunk: str):
+def selected_single_chunk_tasks(task_preset: str):
+    if task_preset == "legacy":
+        return [
+            task
+            for task in SINGLE_CHUNK_TASKS
+            if task[0] in LEGACY_SINGLE_CHUNK_TASK_NAMES
+        ]
+    return SINGLE_CHUNK_TASKS
+
+
+def generate_examples_for_chunk(chunk: str, task_preset: str = "expanded"):
     dataset = []
 
-    if random.random() < PROB_TO_RUN_STEP:
-        print("Generating bullets")
-        dataset.extend(
-            try_generate(
-                "bullets",
-                lambda: run_augmentation(chunk, bullet_augmentation, get_runtime()),
-            )
-        )
+    for task_name, augmentation, probability in selected_single_chunk_tasks(
+        task_preset
+    ):
+        if random.random() >= probability:
+            continue
 
-    if random.random() < PROB_TO_RUN_STEP:
-        print("Generating qa pairs")
+        print(f"Generating {task_name}")
         dataset.extend(
             try_generate(
-                "qa pairs",
-                lambda: run_augmentation(chunk, qa_pair_augmentation, get_runtime()),
-            )
-        )
-
-    if random.random() < PROB_TO_RUN_REPHRASE:
-        print("Generating rephrase")
-        dataset.extend(
-            try_generate(
-                "rephrase",
-                lambda: run_augmentation(chunk, rephrase_augmentation, get_runtime()),
-            )
-        )
-
-    if random.random() < PROB_TO_RUN_STEP:
-        print("Generating Continuation")
-        dataset.extend(
-            try_generate(
-                "continuation",
-                lambda: run_augmentation(
+                task_name,
+                lambda augmentation=augmentation: run_augmentation(
                     chunk,
-                    continuation_augmentation,
+                    augmentation,
                     get_runtime(),
                 ),
-            )
-        )
-
-    if random.random() < PROB_TO_RUN_STEP:
-        print("Generating triplets")
-        dataset.extend(
-            try_generate(
-                "triplets",
-                lambda: run_augmentation(chunk, triplet_augmentation, get_runtime()),
             )
         )
 
@@ -171,12 +165,6 @@ def generate_cross_chunk_examples(chunks: list[str]):
     return dataset
 
 
-def truncate_dataset(dataset, remaining_rows):
-    if remaining_rows is None:
-        return dataset
-    return dataset[:remaining_rows]
-
-
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("input_jsonl", help="Path to the input JSONL file")
@@ -204,6 +192,12 @@ def parse_args():
         type=int,
         default=None,
         help="Stop early after generating at least this many rows",
+    )
+    parser.add_argument(
+        "--task-preset",
+        choices=["expanded", "legacy"],
+        default="expanded",
+        help="Use the prior-training single-passage task set without continuation",
     )
     return parser.parse_args()
 
@@ -239,26 +233,15 @@ def main():
             print(f"Processing chunk {chunk_idx}/{len(chunks)} for text {text_idx}")
             dataset = []
             try:
-                dataset = generate_examples_for_chunk(chunk)
+                dataset = generate_examples_for_chunk(chunk, args.task_preset)
             except KeyboardInterrupt:
                 raise
             except Exception as exc:
                 print(f"Errored out for chunk {chunk_idx}: {exc}\n")
             print(
                 f"Generated {len(dataset)} rows for chunk {chunk_idx} "
-                f"of text {text_idx} before truncation"
+                f"of text {text_idx} before saving"
             )
-
-            if args.max_rows is not None:
-                remaining_rows = args.max_rows - total_examples
-                if remaining_rows <= 0:
-                    print("Reached max row limit before saving more rows. Stopping.")
-                    break
-                dataset = truncate_dataset(dataset, remaining_rows)
-                print(
-                    f"Keeping {len(dataset)} rows for chunk {chunk_idx} "
-                    f"of text {text_idx} after applying max row limit"
-                )
 
             total_examples += len(dataset)
             rows_generated_for_text += len(dataset)
@@ -275,19 +258,8 @@ def main():
         dataset = generate_cross_chunk_examples(chunks)
         print(
             f"Generated {len(dataset)} cross-chunk rows for text {text_idx} "
-            f"before truncation"
+            f"before saving"
         )
-
-        if args.max_rows is not None:
-            remaining_rows = args.max_rows - total_examples
-            if remaining_rows <= 0:
-                print("Reached max row limit before saving more rows. Stopping.")
-                break
-            dataset = truncate_dataset(dataset, remaining_rows)
-            print(
-                f"Keeping {len(dataset)} cross-chunk rows for text {text_idx} "
-                f"after applying max row limit"
-            )
 
         total_examples += len(dataset)
         rows_generated_for_text += len(dataset)

@@ -11,7 +11,7 @@ SEED = 3407
 import argparse
 
 parser = argparse.ArgumentParser(description="ChatML instruction fine-tuning with Unsloth on alpaca-format data.")
-parser.add_argument("--base_model_id", "-i", type=str, required=True,
+parser.add_argument("--base_model_id", "-i", type=str, default="paperbd/smollm_135M_arxiv_cpt",
                     help="Path to a model in models/ directory or a HF model ID.")
 parser.add_argument("--output_model_id", "-o", type=str, default="instruction_tuned",
                     help="Output subdirectory under models/.")
@@ -33,14 +33,14 @@ if args.conversation_extension == 1:
     args.variation = 1
 
 model, tokenizer = FastLanguageModel.from_pretrained(
-    model_name="paperbd/smollm_135M_arxiv_cpt",
-    max_seq_length=1024,
-    load_in_4bit=True,
+    model_name=args.base_model_id,
+    max_seq_length=args.max_seq_length,
+    load_in_4bit=args.load_in_4bit,
     full_finetuning=False,
 )
 tokenizer = get_chat_template(tokenizer, chat_template="chatml")
 
-dataset = load_dataset("paperbd/paper_instructions_300K-v1", split="train")
+dataset = load_dataset(args.dataset, split="train")
 dataset_variations = []
 
 for i in range(args.variations):

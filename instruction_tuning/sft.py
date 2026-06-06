@@ -29,14 +29,14 @@ parser.add_argument("--grad_accum", type=int, default=4)
 parser.add_argument("--epochs", "-e", type=int, default=3)
 parser.add_argument("--lora_r", type=int, default=32)
 parser.add_argument("--load_in_4bit", action="store_true", default=True)
-parser.add_argument("--conversation_extension", type=int, default=2)
-parser.add_argument("--variations", type=int, default=2) 
+parser.add_argument("--conversation_extension", type=int, default=1)
+parser.add_argument("--variations", type=int, default=1)
 parser.add_argument("--learning_rate", "-lr", type=float, default=2e-4) 
 
 args = parser.parse_args()
 
 if args.conversation_extension == 1:
-    args.variation = 1
+    args.variations = 1
 
 model, tokenizer = FastLanguageModel.from_pretrained(
     model_name=args.base_model_id,
@@ -141,6 +141,7 @@ trainer = SFTTrainer(
         eval_strategy="steps",
         eval_steps=50,
         bf16=True,
+        ddp_find_unused_parameters=False,
         load_best_model_at_end=True,
         metric_for_best_model="eval_loss",
     ),

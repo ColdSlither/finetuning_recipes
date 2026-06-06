@@ -253,12 +253,14 @@ async def process_batch(batch, runtime, out):
     results = await asyncio.gather(*tasks, return_exceptions=True)
     written = 0
 
-    for result in results:
+    for (row_idx, _), result in zip(batch, results, strict=True):
         if isinstance(result, KeyboardInterrupt):
             raise result
         if isinstance(result, Exception):
             raise RuntimeError(
-                "Reasoning generation failed before committing this batch"
+                f"Reasoning generation failed for input row {row_idx} "
+                f"before committing this batch: "
+                f"{type(result).__name__}: {result}"
             ) from result
 
     for result in results:

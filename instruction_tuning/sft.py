@@ -1,14 +1,20 @@
+import argparse
+import sys
+
 from unsloth import FastLanguageModel
 from unsloth.chat_templates import get_chat_template, to_sharegpt, standardize_data_formats, train_on_responses_only
 
-import argparse
+if sys.platform != "darwin":
+    import transformers.utils.generic
+
+    transformers.utils.generic._is_mlx_available = False
+
 from datasets import load_dataset
 from datasets.combine import concatenate_datasets
 
 from trl import SFTTrainer, SFTConfig
 from transformers import EarlyStoppingCallback
 SEED = 3407
-import argparse
 
 parser = argparse.ArgumentParser(description="ChatML instruction fine-tuning with Unsloth on alpaca-format data.")
 parser.add_argument("--base_model_id", "-i", type=str, default="paperbd/smollm_135M_arxiv_cpt",

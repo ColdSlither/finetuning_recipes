@@ -22,10 +22,23 @@ dependencies = [
     "rouge-score>=0.1.2",
     "sacrebleu>=2.6.0",
     "text-albumentations==2.1.0",
-    "torch>=2.7",
-    "torchvision>=0.25.0",
+    "torch==2.10.0; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "torch>=2.7; sys_platform != 'linux' or platform_machine != 'x86_64'",
+    "torchvision==0.25.0; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "torchvision>=0.25.0; sys_platform != 'linux' or platform_machine != 'x86_64'",
     "sentence-transformers>=3.0.0",
     "transformers>=4.57.6",
     "trl>=0.24.0",
     "unsloth>=2026.1.4",
+    "xformers==0.0.35; sys_platform == 'linux' and platform_machine == 'x86_64'",
 ]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" }
+torchvision = { index = "pytorch-cu128", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" }
+xformers = { index = "pytorch-cu128", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" }
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true

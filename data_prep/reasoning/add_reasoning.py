@@ -46,6 +46,23 @@ def parse_args():
         help="Maximum concurrent async model calls",
     )
     parser.add_argument(
+        "--max-attempts",
+        type=int,
+        default=3,
+        help="Maximum generation attempts per row",
+    )
+    parser.add_argument(
+        "--retry-base-delay",
+        type=float,
+        default=1.0,
+        help="Base delay in seconds for exponential retry backoff",
+    )
+    parser.add_argument(
+        "--print-model-responses",
+        action="store_true",
+        help="Print complete OpenAI-compatible responses before parsing",
+    )
+    parser.add_argument(
         "--response-format",
         choices=["auto", "json_schema", "json_object"],
         default="auto",
@@ -99,7 +116,7 @@ def build_async_runtime(args):
     reasoning_effort = (
         None if args.reasoning_effort == "disabled" else args.reasoning_effort
     )
-    return OpenAIModel(
+    runtime = OpenAIModel(
         args.model_name,
         base_url=client_kwargs["base_url"],
         api_key=client_kwargs["api_key"],
@@ -108,6 +125,43 @@ def build_async_runtime(args):
         response_format=args.response_format,
         reasoning_effort=reasoning_effort,
     )
+    if args.print_model_responses:
+        enable_model_response_logging(runtime)
+    return runtime
+
+
+def enable_model_response_logging(runtime):
+    completions = runtime.model.client.chat.completions
+    original_create = completions.create
+
+    async def create_with_logging(*args, **kwargs):
+        try:
+            response = await original_create(*args, **kwargs)
+        except Exception as exc:
+            print(
+                "MODEL_RESPONSE_ERROR "
+                + json.dumps(
+                    {
+                        "type": type(exc).__name__,
+                        "message": str(exc),
+                    },
+                    ensure_ascii=False,
+                ),
+                flush=True,
+            )
+            raise
+
+        print(
+            "MODEL_RESPONSE "
+            + json.dumps(
+                response.model_dump(mode="json"),
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
+        return response
+
+    completions.create = create_with_logging
 
 
 def iter_alpaca_rows(path: str, start_index: int, max_rows: int | None):
@@ -132,14 +186,34 @@ def iter_alpaca_rows(path: str, start_index: int, max_rows: int | None):
             emitted += 1
 
 
-async def add_reasoning_for_row(row_idx: int, row: AlpacaDataset, runtime):
-    row_with_reasoning = await agenerate_reasoning(row.input, row, runtime)
-    return row_idx, row_with_reasoning
+async def add_reasoning_for_row(
+    row_idx: int,
+    row: AlpacaDataset,
+    runtime,
+    max_attempts: int = 3,
+    retry_base_delay: float = 1.0,
+):
+    for attempt in range(1, max_attempts + 1):
+        try:
+            row_with_reasoning = await agenerate_reasoning(row.input, row, runtime)
+            return row_idx, row_with_reasoning
+        except Exception as exc:
+            if attempt == max_attempts:
+                raise
+
+            delay = retry_base_delay * (2 ** (attempt - 1))
+            print(
+                f"Retrying reasoning row {row_idx} after attempt "
+                f"{attempt}/{max_attempts} failed: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            await asyncio.sleep(delay)
 
 
-def dump_reasoning_row(row: AlpacaDataset) -> str:
+def dump_reasoning_row(row_idx: int, row: AlpacaDataset) -> str:
     return json.dumps(
         {
+            "_source_row_idx": row_idx,
             "instruction": row.instruction,
             "input": row.input,
             "reasoning": row.reasoning,
@@ -152,6 +226,13 @@ def dump_reasoning_row(row: AlpacaDataset) -> str:
 def _is_valid_reasoning_row(data) -> bool:
     return (
         isinstance(data, dict)
+        and (
+            "_source_row_idx" not in data
+            or (
+                isinstance(data["_source_row_idx"], int)
+                and data["_source_row_idx"] >= 0
+            )
+        )
         and isinstance(data.get("instruction"), str)
         and isinstance(data.get("input"), str)
         and isinstance(data.get("reasoning"), str)
@@ -159,11 +240,12 @@ def _is_valid_reasoning_row(data) -> bool:
     )
 
 
-def count_valid_output_rows(path: str) -> int:
+def get_output_progress(path: str, start_index: int) -> tuple[int, int]:
     if not os.path.exists(path):
-        return 0
+        return 0, start_index
 
     valid_rows = 0
+    next_input_index = start_index
     with open(path, "rb+") as f:
         while True:
             line_start = f.tell()
@@ -187,31 +269,50 @@ def count_valid_output_rows(path: str) -> int:
                 break
 
             valid_rows += 1
+            source_row_idx = data.get("_source_row_idx")
+            if source_row_idx is None:
+                next_input_index = max(
+                    next_input_index,
+                    start_index + valid_rows,
+                )
+            else:
+                next_input_index = max(next_input_index, source_row_idx + 1)
 
-    return valid_rows
+    return valid_rows, next_input_index
 
 
-def write_reasoning_row(out, row: AlpacaDataset):
-    out.write(dump_reasoning_row(row) + "\n")
+def write_reasoning_row(out, row_idx: int, row: AlpacaDataset):
+    out.write(dump_reasoning_row(row_idx, row) + "\n")
     out.flush()
     os.fsync(out.fileno())
 
 
 async def amain():
     args = parse_args()
+    if args.max_attempts < 1:
+        raise ValueError("--max-attempts must be at least 1")
+    if args.retry_base_delay < 0:
+        raise ValueError("--retry-base-delay must be non-negative")
+
     runtime = build_async_runtime(args)
-    completed_rows = 0 if args.overwrite else count_valid_output_rows(args.output_jsonl)
-    if args.max_rows is not None and completed_rows >= args.max_rows:
+    if args.overwrite:
+        completed_rows, effective_start_index = 0, args.start_index
+    else:
+        completed_rows, effective_start_index = get_output_progress(
+            args.output_jsonl,
+            args.start_index,
+        )
+    processed_rows = effective_start_index - args.start_index
+    if args.max_rows is not None and processed_rows >= args.max_rows:
         print(
-            f"Output already has {completed_rows} completed rows, "
+            f"Output already covers {processed_rows} input rows, "
             f"which satisfies max_rows={args.max_rows}."
         )
         return
 
     output_mode = "w" if args.overwrite else "a"
-    effective_start_index = args.start_index + completed_rows
     remaining_rows = (
-        None if args.max_rows is None else args.max_rows - completed_rows
+        None if args.max_rows is None else args.max_rows - processed_rows
     )
     total_written = 0
 
@@ -221,9 +322,13 @@ async def amain():
     print(f"model_name={args.model_name}")
     print(f"base_url={resolve_client_config(args)['base_url']}")
     print(f"total_concurrent_calls={args.total_concurrent_calls}")
+    print(f"max_attempts={args.max_attempts}")
+    print(f"retry_base_delay={args.retry_base_delay}")
+    print(f"print_model_responses={args.print_model_responses}")
     print(f"start_index={args.start_index}")
     print(f"max_rows={args.max_rows}")
     print(f"completed_output_rows={completed_rows}")
+    print(f"processed_input_rows={processed_rows}")
     print(f"effective_start_index={effective_start_index}")
     print(f"remaining_rows={remaining_rows}")
 
@@ -236,18 +341,42 @@ async def amain():
         ):
             batch.append((row_idx, row))
             if len(batch) >= args.total_concurrent_calls:
-                total_written += await process_batch(batch, runtime, out)
+                total_written += await process_batch(
+                    batch,
+                    runtime,
+                    out,
+                    args.max_attempts,
+                    args.retry_base_delay,
+                )
                 batch = []
 
         if batch:
-            total_written += await process_batch(batch, runtime, out)
+            total_written += await process_batch(
+                batch,
+                runtime,
+                out,
+                args.max_attempts,
+                args.retry_base_delay,
+            )
 
     print(f"Saved {total_written} rows with reasoning to {args.output_jsonl}")
 
 
-async def process_batch(batch, runtime, out):
+async def process_batch(
+    batch,
+    runtime,
+    out,
+    max_attempts: int = 3,
+    retry_base_delay: float = 1.0,
+):
     tasks = [
-        add_reasoning_for_row(row_idx, row, runtime)
+        add_reasoning_for_row(
+            row_idx,
+            row,
+            runtime,
+            max_attempts,
+            retry_base_delay,
+        )
         for row_idx, row in batch
     ]
     results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -257,15 +386,16 @@ async def process_batch(batch, runtime, out):
         if isinstance(result, KeyboardInterrupt):
             raise result
         if isinstance(result, Exception):
-            raise RuntimeError(
-                f"Reasoning generation failed for input row {row_idx} "
-                f"before committing this batch: "
+            print(
+                f"Skipped reasoning row {row_idx} after retries failed: "
                 f"{type(result).__name__}: {result}"
-            ) from result
+            )
 
     for result in results:
+        if isinstance(result, Exception):
+            continue
         row_idx, row = result
-        write_reasoning_row(out, row)
+        write_reasoning_row(out, row_idx, row)
         written += 1
         print(f"Saved reasoning row {row_idx}")
 

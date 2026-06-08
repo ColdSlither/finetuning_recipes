@@ -18,7 +18,7 @@ parser.add_argument("--output", "-o", type=str, default=None, help="Output model
 args = parser.parse_args()
 
 MODEL_ID = "sentence-transformers/all-MiniLM-L6-v2"
-DEVICE = "mps"
+DEVICE = "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")
 BATCH_SIZE = 64
 LR_HEAD = 5e-4
 LR_ENCODER = 5e-5

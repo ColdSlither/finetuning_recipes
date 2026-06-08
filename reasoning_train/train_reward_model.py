@@ -191,9 +191,10 @@ for epoch in range(EPOCHS):
             if improved:
                 best_spearman = sr
                 best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
-                torch.save(best_state, f"{OUTPUT_DIR}/pytorch_model.bin")
                 model.encoder.save_pretrained(OUTPUT_DIR)
                 tokenizer.save_pretrained(OUTPUT_DIR)
+                head_state = {k.replace("head.", ""): v for k, v in best_state.items() if k.startswith("head.")}
+                torch.save(head_state, f"{OUTPUT_DIR}/head_weights.pt")
                 patience_counter = 0
                 tqdm.write(f"Step {global_step}: val_loss={val_loss/len(val_loader):.4f} val_spearman={sr:.4f} ✓ saved")
             else:
@@ -212,7 +213,7 @@ pbar.close()
 
 # ---- Restore best weights ----
 print(f"Restoring best model (val_spearman={best_spearman:.4f})...")
-model.load_state_dict(torch.load(f"{OUTPUT_DIR}/pytorch_model.bin", weights_only=True))
+model.load_state_dict(best_state)
 
 # ---- Quick test ----
 print("\nTesting batch scoring...")

@@ -3,6 +3,8 @@ import torch.nn as nn
 from transformers import AutoTokenizer, AutoModel
 from pathlib import Path
 
+BASE_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+
 
 def mean_pool(hidden, attention_mask):
     mask = attention_mask.unsqueeze(-1).expand(hidden.size()).float()
@@ -11,7 +13,7 @@ def mean_pool(hidden, attention_mask):
 
 def load_reward_model(path):
     """
-    Load a trained MiniLM reward model from a directory.
+    Load a trained MiniLM reward model.
 
     Usage:
         model, tokenizer = load_reward_model("paperbd/minilm-reward")
@@ -19,17 +21,25 @@ def load_reward_model(path):
     """
     path = Path(path).resolve()
 
-    encoder = AutoModel.from_pretrained(str(path), local_files_only=True)
-    tokenizer = AutoTokenizer.from_pretrained(str(path), local_files_only=True)
+    # Tokenizer
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(str(path))
+    except Exception:
+        tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL)
 
+    # Encoder
+    if (path / "model.safetensors").exists():
+        encoder = AutoModel.from_pretrained(str(path))
+    else:
+        encoder = AutoModel.from_pretrained(BASE_MODEL)
+
+    # Head (~3KB)
     head = nn.Sequential(nn.Dropout(0.1), nn.Linear(384, 1), nn.Sigmoid())
-
-    state = torch.load(str(path / "pytorch_model.bin"), weights_only=True, map_location="cpu")
-    own = head.state_dict()
-    for k in own:
-        if f"head.{k}" in state:
-            own[k].copy_(state[f"head.{k}"])
-    head.load_state_dict(own)
+    for fname in ["head_weights.pt", "head_weights.bin"]:
+        hp = path / fname
+        if hp.exists():
+            head.load_state_dict(torch.load(str(hp), weights_only=True, map_location="cpu"))
+            break
     head.eval()
 
     class RewardScorer:

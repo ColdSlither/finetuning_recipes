@@ -16,7 +16,7 @@ def load_reward_model(path):
     Load a trained MiniLM reward model.
 
     Usage:
-        model, tokenizer = load_reward_model("paperbd/minilm-reward")
+        model, tokenizer = load_reward_model("paperbd/neuraltxt-reward-22M")
         score = model.score("reference text", "candidate text")
     """
     path = Path(path).resolve()

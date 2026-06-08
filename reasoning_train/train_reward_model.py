@@ -87,7 +87,7 @@ import random
 rng = random.Random(42)
 
 # Primary: our uploaded science dataset
-science = load_dataset("paperbd/papers_answer_equivalance")
+science = load_dataset("paperbd/paper_answers_reward")
 train_records = list(science["train"])
 val_records = list(science["test"])
 

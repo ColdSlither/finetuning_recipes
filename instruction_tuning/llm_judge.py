@@ -6,8 +6,7 @@ from pydantic import BaseModel, Field
 from openai import AsyncOpenAI
 import outlines
 
-JUDGE_MODEL = "deepseek/deepseek-v4-pro"
-SEMAPHORE = 50
+SEMAPHORE = 20
 
 JUDGE_PROMPT = """\
 You are an expert evaluator for AI assistant responses on research and academic questions.
@@ -23,8 +22,6 @@ Dimensions:
 - relevance:           Does the response directly address what was asked, without padding or going off-topic?
 - completeness:        Does the response cover the key points from the ground truth without omitting important details?
 
-Provide a brief reasoning (1-2 sentences) before the scores.
-
 ---
 QUESTION:
 {question}
@@ -39,7 +36,7 @@ GROUND TRUTH:
 
 
 class JudgeScore(BaseModel):
-    reasoning: str = Field(..., description="Brief explanation of the scores.")
+    # reasoning: str = Field(..., description="Brief explanation of the scores.")
     faithfulness: int = Field(..., ge=1, le=5)
     answer_correctness: int = Field(..., ge=1, le=5)
     relevance: int = Field(..., ge=1, le=5)
@@ -47,6 +44,7 @@ class JudgeScore(BaseModel):
 
 
 parser = argparse.ArgumentParser(description="Async LLM judge for eval JSONL files.")
+parser.add_argument("--model", "-m", type=str, default="deepseek/deepseek-v4-pro")
 parser.add_argument("--input_file", "-i", type=str, required=True)
 parser.add_argument("--output_file", "-o", type=str, default=None)
 parser.add_argument("--api_key", type=str, default=os.environ.get("OPENROUTER_API_KEY"))
@@ -63,18 +61,46 @@ client = AsyncOpenAI(
     api_key=args.api_key,
     base_url="https://openrouter.ai/api/v1",
 )
-model = outlines.from_openai(client, JUDGE_MODEL)
+model = outlines.from_openai(client, args.model)
 
 
 async def judge_one(sem: asyncio.Semaphore, idx: int, total: int, record: dict) -> dict:
     prompt = JUDGE_PROMPT.format(
         question=record["question"],
-        response=record["response"],
-        ground_truth=record["ground_truth"],
+        response=record["response"][:5000],
+        ground_truth=record["ground_truth"][:5000],
     )
     async with sem:
-        raw = await model(prompt, JudgeScore, max_tokens=4000)
-        score = JudgeScore.model_validate_json(raw) if isinstance(raw, str) else raw
+        score = None
+        for attempt in range(3):
+            try:
+                raw = await asyncio.wait_for(
+                    model(
+                        prompt,
+                        JudgeScore,
+                        max_tokens=10000,
+                        extra_body={"reasoning_effort": "low"},
+                    ),
+                    timeout=300,
+                )
+                score = (
+                    JudgeScore.model_validate_json(raw) if isinstance(raw, str) else raw
+                )
+                break
+            except Exception as e:
+                if attempt == 2:
+                    score = JudgeScore(
+                        faithfulness=1,
+                        answer_correctness=1,
+                        relevance=1,
+                        completeness=1,
+                    )
+                else:
+                    await asyncio.sleep(1)
+        if score is None:
+            score = JudgeScore(
+                faithfulness=1, answer_correctness=1, relevance=1, completeness=1
+            )
 
     result = {
         **record,
@@ -84,7 +110,7 @@ async def judge_one(sem: asyncio.Semaphore, idx: int, total: int, record: dict) 
             "relevance": score.relevance,
             "completeness": score.completeness,
         },
-        "reasoning": score.reasoning,
+        # "reasoning": score.reasoning,
     }
     avg = sum(result["scores"].values()) / 4
     print(
@@ -101,29 +127,46 @@ async def main():
         records = [json.loads(line) for line in f]
 
     if args.limit:
-        records = records[:args.limit]
+        records = records[: args.limit]
 
-    total = len(records)
     sem = asyncio.Semaphore(SEMAPHORE)
 
-    tasks = [judge_one(sem, i, total, r) for i, r in enumerate(records)]
-    results = await asyncio.gather(*tasks)
+    # Check for existing progress
+    done_ids = set()
+    if os.path.exists(args.output_file):
+        with open(args.output_file) as f:
+            for line in f:
+                try:
+                    done_ids.add(json.loads(line)["id"])
+                except json.JSONDecodeError:
+                    pass  # skip partial writes from crashes
 
-    # preserve original order
-    results.sort(key=lambda r: r["id"])
+    pending = [r for r in records if r["id"] not in done_ids]
+    tasks = [judge_one(sem, i, len(pending), r) for i, r in enumerate(pending)]
 
-    with open(args.output_file, "w") as out:
-        for r in results:
-            out.write(json.dumps(r) + "\n")
+    with open(args.output_file, "a") as out:
+        for coro in asyncio.as_completed(tasks):
+            result = await coro
+            out.write(json.dumps(result) + "\n")
+            out.flush()
+
+    # Read all results for summary
+    all_results = []
+    with open(args.output_file) as f:
+        for line in f:
+            all_results.append(json.loads(line))
+    all_results.sort(key=lambda r: r["id"])
 
     keys = ["faithfulness", "answer_correctness", "relevance", "completeness"]
     print("\n--- summary ---")
     for k in keys:
-        vals = [r["scores"][k] for r in results]
-        print(f"  {k:22s}  avg={sum(vals)/len(vals):.2f}  min={min(vals)}  max={max(vals)}")
-    overall = [sum(r["scores"].values()) / 4 for r in results]
+        vals = [r["scores"][k] for r in all_results]
+        print(
+            f"  {k:22s}  avg={sum(vals)/len(vals):.2f}  min={min(vals)}  max={max(vals)}"
+        )
+    overall = [sum(r["scores"].values()) / 4 for r in all_results]
     print(f"  {'overall':22s}  avg={sum(overall)/len(overall):.2f}")
-    print(f"\nSaved to {args.output_file}")
+    print(f"\nSaved to {args.output_file} ({len(all_results)} records)")
 
 
 asyncio.run(main())

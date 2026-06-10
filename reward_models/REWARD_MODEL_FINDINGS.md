@@ -261,3 +261,111 @@ DistilBERT fixes the exact-copy blindness (0.86 on 1:1 identical) but becomes to
 
 ### Key Insight
 DistilBERT (66M) doesn't dramatically outperform MiniLM (22M) — both hit the same embedding-model ceiling. The 100-pt gain (0.49→0.70) is significant but the confound fooled rate is unchanged (11%→12%). Larger models in this architecture family primarily help with discrimination, not semantic understanding.
+
+
+---
+
+## v6 Results (June 2026)
+
+### Config
+MiniLM + STS-B scale fix + mean+max pooling + contrastive minimal-edit augmentation
+(synonym/filler @ 4.5 vs antonym/negation/number @ 3.0, exact-match @ 5.0).
+Midpoint checkpoint trained last 3 layers; final continued with last 5 (8.87M trainable).
+Dirs: `reward_model_finetuned_v6-1` (midpoint), `reward_model_finetuned_v6` (final).
+
+### Results
+
+| Metric | v5 | v6-1 (mid) | v6 (final) |
+|---|---|---|---|
+| 100-pt eval Spearman | 0.545 | **0.682** | 0.636 |
+| Answer equivalence ROC-AUC | 0.869 | **0.906** (best ever; Word F1 = 0.887) | 0.887 |
+| Val split Spearman | 0.625 | 0.594 | **0.648** |
+| Confounds fooled (>0.7) | 13% | 16% | 14% |
+| Confounds caught (<0.4) | 10% | **17%** | 12% |
+| Synonym-vs-flip margin (aug vocab) | 0.19 | 0.28 | **0.29** |
+| Synonym-vs-flip margin (held-out vocab) | — | 0.06 | 0.07 |
+
+### Key findings
+1. **v6-1 (midpoint) is the recommended default baseline.** Final training gained on
+   val Spearman (0.594→0.648) while losing on both external evals (100-pt 0.682→0.636,
+   AE 0.906→0.887) — checkpoint selection by val MSE drifted toward the val distribution.
+   Future runs should select checkpoints by 100-pt Spearman, not val MSE.
+2. **Contrastive augmentation works on listed vocab but transfers weakly.** Margin ~0.29
+   on augmentation-list pairs vs 0.04–0.10 on held-out antonyms (north/south,
+   doubles/halves). Next data lever: expand antonym list or LLM-generate flips.
+3. Confound fooled-rate uptick vs v5 is an artifact of moving the confound label
+   2.5 → 3.0 (confound mean unchanged at ~0.55; >0.7 threshold misaligned with new target).
+4. Dogfeed (final vs v5): one-word swap 0.74→0.59, wrong number 0.40→0.25 (best ever),
+   exact copy 0.82, wrong-format 0.68→0.77, paraphrase 0.71→0.83. Regressions: wrong
+   dataset name 0.55→0.85 (fooled), Good Q&A pair 0.47→0.27 (under-scored).
+5. `reward_model.py` loader auto-detects meanmax pooling from saved head width (768 = meanmax).
+
+### One-Word-Swap Detection (benchmark_swap.py, n=150 real test-split refs per row)
+
+Compares score(ref, ref) vs score(ref, ref-with-one-word-changed).
+"Noticed" = score dropped >0.15 vs the exact-match score for the same reference.
+
+| Perturbation | v6-1 mean | v6-1 noticed | v6 final mean | v6 final noticed |
+|---|---|---|---|---|
+| exact match (ref vs ref) | 0.734 | — | **0.793** | — |
+| negation flip | 0.498 | 63% | 0.513 | **71%** |
+| number swap | 0.541 | 33% | 0.542 | **47%** |
+| antonym swap (trained vocab) | 0.563 | 29% | 0.551 | **44%** |
+| random word (untrained) | 0.655 | 22% | 0.720 | 20% |
+| synonym swap (control, should NOT drop) | 0.686 | 1% ✓ | 0.742 | 0% ✓ |
+
+**Findings:**
+1. The model discriminates WHICH word changed, not just edit distance: synonym swaps
+   cause zero drop (perfect control) while meaning-flips are penalized. The contrastive
+   augmentation achieved its goal.
+2. **v6 final beats v6-1 on swap detection** (antonyms 29%→44%, numbers 33%→47%,
+   negation 63%→71%) — the second half of training sharpened minimal-edit discrimination
+   while costing general ranking. Checkpoint choice depends on priority:
+   v6-1 for overall reward correlation, v6 final for confound/minimal-edit resistance.
+3. Detection is concentrated on trained vocabulary: untrained random word swaps are
+   noticed only ~20% of the time. Negation generalizes best (structural cue, not vocab).
+4. Exact-match anchoring is soft (ref-vs-ref mean 0.79, only 53% >0.8) — identical
+   copies should score near-certain 5★. Consider raising exact-match augmentation coverage.
+
+
+---
+
+## v7-1 Midpoint (June 2026) — NEW BEST, clean sweep
+
+### Config
+Same recipe as v6 (MiniLM + STS-B fix + meanmax + contrastive aug) but **last 5 layers
+trained** (8.87M params) instead of 3. Midpoint checkpoint; final pending.
+Dir: `reward_model_finetuned_v7-1`.
+
+### Results — beats every prior checkpoint on every metric simultaneously
+
+| Metric | v6-1 (mid) | v6 (final) | v7-1 (mid) |
+|---|---|---|---|
+| 100-pt eval Spearman | 0.682 | 0.636 | **0.718** (v4 record: 0.734) |
+| Answer equivalence ROC-AUC | 0.906 | 0.887 | **0.942** (record; Word F1 0.887) |
+| Val split Spearman | 0.594 | 0.648 | 0.647 |
+| Confounds fooled (>0.7) | 16% | 14% | **12%** |
+| Confounds caught (<0.4) | 17% | 12% | 16% |
+
+### Swap detection (benchmark_swap.py)
+
+| Perturbation | v6-1 | v6 final | v7-1 |
+|---|---|---|---|
+| exact match mean (>0.8 rate) | 0.73 (37%) | 0.79 (53%) | **0.84 (68%)** |
+| antonym noticed | 29% | 44% | **75%** |
+| negation noticed | 63% | 71% | **83%** |
+| number noticed | 33% | 47% | **79%** |
+| random word (untrained) noticed | 22% | 20% | **44%** |
+| synonym control (should be ~0) | 1% | 0% | 2% ✓ |
+
+### Key findings
+1. **5-layer training dissolves the v6 trade-off** — general ranking AND minimal-edit
+   discrimination improve together. No more choosing between checkpoints.
+2. **Generalization beyond augmentation vocab doubled** (untrained random-word swaps
+   noticed 20%→44%): more trainable capacity lets the swap-sensitivity lesson
+   transfer instead of memorizing word lists.
+3. Exact-match anchor largely fixed (dogfeed 1:1 identical 0.52→0.85; ref-vs-ref 68% >0.8).
+4. Dogfeed "wrong number" single case (0.50) misleads — at n=150 v7-1 notices number
+   swaps 79% vs v6's 47%. Trust benchmark_swap.py over single dogfeed cases.
+5. **Caution for v7 final**: v6's external metrics peaked at midpoint and declined with
+   val-MSE checkpoint selection. Keep v7-1; consider selecting by 100-pt Spearman.

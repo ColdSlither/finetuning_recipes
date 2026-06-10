@@ -185,7 +185,7 @@ model = RewardModel().to(DEVICE)
 encoder_params = [p for p in model.encoder.parameters() if p.requires_grad]
 head_params = list(model.head.parameters())
 trainable = sum(p.numel() for p in encoder_params) + sum(p.numel() for p in head_params)
-print(f"Trainable params: {trainable:,} (last 3 layers + head)")
+print(f"Trainable params: {trainable:,} (last {UNFREEZE_LAYERS} layers + head)")
 print(f"LR: head={LR_HEAD}, encoder={LR_ENCODER}, dropout={DROPOUT}")
 
 optimizer = torch.optim.AdamW(

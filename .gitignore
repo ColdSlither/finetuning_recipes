@@ -24,3 +24,4 @@ tutorial_notebooks/*
 *png
 preference_optimization/evals/*
 preference_optimization/diversity_evals/evals/*
+local_scripts/*

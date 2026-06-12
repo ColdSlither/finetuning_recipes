@@ -18,17 +18,7 @@ echo "📦 Installing system packages..."
 $SUDO apt-get update -y
 $SUDO apt-get install -y tmux vim curl git
 
-# 2. Install uv
-if ! command -v uv &> /dev/null; then
-    echo "⚡ Installing uv..."
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-    
-    # Ensure uv is in path for this session if possible, though mostly for next session
-    # standard install puts it in ~/.cargo/bin
-    export PATH="$HOME/.cargo/bin:$PATH"
-else
-    echo "✅ uv is already installed."
-fi
+curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # 3. Fix "missing or unsuitable terminal: xterm-ghostty"
 # This happens when connecting from Ghostty terminal to a server without its terminfo.

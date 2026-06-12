@@ -422,7 +422,7 @@ def main():
     )
 
     training_args = GRPOConfig(
-        temperature=1.0,
+        temperature=0.8,
         learning_rate=args.learning_rate,
         weight_decay=0.001,
         warmup_ratio=0.1,

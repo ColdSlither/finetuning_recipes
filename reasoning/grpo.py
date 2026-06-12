@@ -44,16 +44,16 @@ def parse_args():
     )
     parser.add_argument("--max_seq_length", type=int, default=2048)
     parser.add_argument("--max_completion_length", type=int, default=1024)
-    parser.add_argument("--batch_size", "-bs", type=int, default=1)
+    parser.add_argument("--batch_size", "-bs", type=int, default=8)
     parser.add_argument("--grad_accum", type=int, default=8)
     parser.add_argument("--num_generations", "-g", type=int, default=8)
-    parser.add_argument("--learning_rate", "-lr", type=float, default=5e-5)
+    parser.add_argument("--learning_rate", "-lr", type=float, default=1e-5)
     parser.add_argument("--lora_r", type=int, default=32)
     parser.add_argument("--max_steps", type=int, default=10000)
-    parser.add_argument("--save_steps", type=int, default=100)
+    parser.add_argument("--save_steps", type=int, default=50)
     parser.add_argument("--save_total_limit", type=int, default=3)
     parser.add_argument("--logging_steps", type=int, default=1)
-    parser.add_argument("--eval_steps", type=int, default=100)
+    parser.add_argument("--eval_steps", type=int, default=50)
     parser.add_argument(
         "--num_train_rows",
         "-n",
@@ -177,7 +177,7 @@ def main():
         per_device_eval_batch_size=args.num_generations,
         gradient_accumulation_steps=args.grad_accum,
         num_generations=args.num_generations,
-        max_prompt_length=args.max_seq_length // 2,
+        max_prompt_length=args.max_seq_length - args.max_completion_length - 128,
         max_completion_length=args.max_completion_length,
         max_steps=args.max_steps,
         save_steps=args.save_steps,

@@ -193,12 +193,33 @@ def main():
         seed=SEED,
     )
 
+    # GRPO groups rewards as view(-1, num_generations) on each process's local
+    # generation batch. The per-device train batch (batch_size * grad_accum) and
+    # the per-device eval batch (per_device_eval_batch_size) must each be a
+    # multiple of num_generations, or generation/scoring crashes with a cryptic
+    # reshape error mid-run.
+    train_local_batch = args.batch_size * args.grad_accum
+    eval_local_batch = training_args.per_device_eval_batch_size
+    for label, local_batch in (
+        ("train", train_local_batch),
+        ("eval", eval_local_batch),
+    ):
+        if local_batch % args.num_generations != 0:
+            raise ValueError(
+                f"{label} per-device batch ({local_batch}) is not divisible by "
+                f"num_generations ({args.num_generations}); GRPO reshapes rewards "
+                f"as view(-1, num_generations) and would crash. Adjust "
+                f"batch_size/grad_accum/num_generations."
+            )
+
     print(
         f"Model: {args.model_path}\n"
         f"Train rows: {len(train_dataset)}\n"
         f"Eval rows: {len(eval_dataset)}\n"
         f"Max steps: {args.max_steps}\n"
         f"Generations per prompt: {args.num_generations}\n"
+        f"Train per-device batch (bs*grad_accum): {train_local_batch}\n"
+        f"Eval per-device batch: {eval_local_batch}\n"
         f"LoRA rank: {args.lora_r}\n"
     )
 

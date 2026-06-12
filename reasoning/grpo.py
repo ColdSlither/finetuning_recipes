@@ -31,7 +31,11 @@ def parse_args():
     parser.add_argument(
         "--output_dir",
         "-o",
-        default="models/reasoning_grpo",
+        default="reasoning_grpo",
+        help=(
+            "Output model id or path. A bare id like 'grpo_v1' is written to "
+            "models/grpo_v1; a value containing '/' is used as-is."
+        ),
     )
     parser.add_argument(
         "--dataset_name",
@@ -41,16 +45,37 @@ def parse_args():
     parser.add_argument("--max_seq_length", type=int, default=2048)
     parser.add_argument("--max_completion_length", type=int, default=1024)
     parser.add_argument("--batch_size", "-bs", type=int, default=1)
-    parser.add_argument("--grad_accum", type=int, default=4)
-    parser.add_argument("--num_generations", "-g", type=int, default=4)
-    parser.add_argument("--learning_rate", "-lr", type=float, default=5e-6)
+    parser.add_argument("--grad_accum", type=int, default=8)
+    parser.add_argument("--num_generations", "-g", type=int, default=8)
+    parser.add_argument("--learning_rate", "-lr", type=float, default=5e-5)
     parser.add_argument("--lora_r", type=int, default=32)
-    parser.add_argument("--max_steps", type=int, default=500)
+    parser.add_argument("--max_steps", type=int, default=10000)
     parser.add_argument("--save_steps", type=int, default=100)
+    parser.add_argument("--save_total_limit", type=int, default=3)
     parser.add_argument("--logging_steps", type=int, default=1)
     parser.add_argument("--eval_steps", type=int, default=100)
-    parser.add_argument("--num_train_rows", "-n", type=int, default=1000)
-    parser.add_argument("--num_eval_rows", type=int, default=32)
+    parser.add_argument(
+        "--num_train_rows",
+        "-n",
+        type=int,
+        default=None,
+        help="Number of training rows. Omit to train on the full dataset.",
+    )
+    parser.add_argument(
+        "--num_eval_rows",
+        type=int,
+        default=None,
+        help="Number of held-out eval rows. Defaults to 64 when omitted.",
+    )
+    parser.add_argument(
+        "--early_stopping_patience",
+        type=int,
+        default=0,
+        help=(
+            "Stop after this many evals without eval_reward improvement. "
+            "0 disables early stopping."
+        ),
+    )
     parser.add_argument(
         "--log_dir",
         default=None,
@@ -59,7 +84,7 @@ def parse_args():
     parser.add_argument(
         "--load_in_4bit",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=False,
     )
     parser.add_argument("--fast_inference", action="store_true")
     return parser.parse_args()
@@ -79,7 +104,10 @@ def main():
     from datasets import load_dataset
     from trl import GRPOConfig, GRPOTrainer
 
-    log_dir = Path(args.log_dir or f"{args.output_dir}/log")
+    output_dir = (
+        args.output_dir if "/" in args.output_dir else f"models/{args.output_dir}"
+    )
+    log_dir = Path(args.log_dir or f"{output_dir}/log")
     trainer_class = build_eval_logging_trainer(GRPOTrainer, log_dir)
 
     print(f"Loading model: {args.model_path}")
@@ -114,8 +142,13 @@ def main():
 
     print(f"Loading dataset: {args.dataset_name}")
     dataset = load_dataset(args.dataset_name, split="train").shuffle(seed=SEED)
-    num_eval_rows = min(args.num_eval_rows, len(dataset))
-    num_train_rows = min(args.num_train_rows, len(dataset) - num_eval_rows)
+    num_eval_rows = min(args.num_eval_rows or 64, len(dataset))
+    remaining_rows = len(dataset) - num_eval_rows
+    num_train_rows = (
+        remaining_rows
+        if args.num_train_rows is None
+        else min(args.num_train_rows, remaining_rows)
+    )
     if num_train_rows == 0 or num_eval_rows == 0:
         raise ValueError("Training and evaluation datasets must both be non-empty.")
 
@@ -148,10 +181,14 @@ def main():
         max_completion_length=args.max_completion_length,
         max_steps=args.max_steps,
         save_steps=args.save_steps,
+        save_total_limit=args.save_total_limit,
         eval_strategy="steps",
         eval_steps=args.eval_steps,
+        load_best_model_at_end=True,
+        metric_for_best_model="eval_reward",
+        greater_is_better=True,
         report_to="none",
-        output_dir=args.output_dir,
+        output_dir=output_dir,
         bf16=True,
         seed=SEED,
     )
@@ -173,11 +210,19 @@ def main():
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
     )
+    if args.early_stopping_patience > 0:
+        from transformers import EarlyStoppingCallback
+
+        trainer.add_callback(
+            EarlyStoppingCallback(
+                early_stopping_patience=args.early_stopping_patience
+            )
+        )
     trainer.train()
 
-    model.save_pretrained(f"{args.output_dir}/final")
-    tokenizer.save_pretrained(f"{args.output_dir}/final")
-    print(f"Saved to {args.output_dir}/final")
+    model.save_pretrained(f"{output_dir}/final")
+    tokenizer.save_pretrained(f"{output_dir}/final")
+    print(f"Saved to {output_dir}/final")
     print(f"Evaluation logs saved to {log_dir}")
 
 

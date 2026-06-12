@@ -4,7 +4,7 @@ import math
 from pathlib import Path
 
 try:
-    from reasoning.grpo import (
+    from reasoning.env import (
         DOOM_LOOP_PENALTY,
         OUTPUT_FORMAT_MATCH_REWARD,
         OUTPUT_FORMAT_MISMATCH_REWARD,
@@ -17,7 +17,7 @@ try:
         format_row,
     )
 except ModuleNotFoundError:
-    from grpo import (
+    from env import (
         DOOM_LOOP_PENALTY,
         OUTPUT_FORMAT_MATCH_REWARD,
         OUTPUT_FORMAT_MISMATCH_REWARD,

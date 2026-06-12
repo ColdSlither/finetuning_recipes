@@ -4,7 +4,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from reasoning import env, grpo
+from reasoning import env
+from reasoning import eval_logging
 
 
 VALID_COMPLETION = "<think>Work through the problem.</think> The answer is 42."
@@ -19,7 +20,6 @@ class OutputFormatTests(unittest.TestCase):
 
         for completion in completions:
             with self.subTest(completion=completion):
-                self.assertTrue(grpo._has_expected_format(completion))
                 self.assertTrue(env._has_expected_format(completion))
 
     def test_malformed_output_format_is_rejected(self):
@@ -35,7 +35,6 @@ class OutputFormatTests(unittest.TestCase):
 
         for completion in completions:
             with self.subTest(completion=completion):
-                self.assertFalse(grpo._has_expected_format(completion))
                 self.assertFalse(env._has_expected_format(completion))
 
     def test_grpo_reward_uses_untagged_answer(self):
@@ -49,14 +48,21 @@ class OutputFormatTests(unittest.TestCase):
 
         reward_model = RewardModel()
         completions = [[{"role": "assistant", "content": VALID_COMPLETION}]]
+        rewards = {
+            reward.__name__: reward for reward in env.trl_reward_functions()
+        }
 
-        with patch.object(grpo, "_reward_model", reward_model):
+        with patch.object(env, "_reward_model", reward_model):
             self.assertEqual(
-                grpo.think_format_reward([], completions, ["The answer is 42."]),
+                rewards["think_format_reward"](
+                    [],
+                    completions,
+                    ["The answer is 42."],
+                ),
                 [1.0],
             )
             self.assertEqual(
-                grpo.neuraltxt_reward(
+                rewards["neuraltxt_reward"](
                     [],
                     completions,
                     ["The answer is 42."],
@@ -77,9 +83,12 @@ class OutputFormatTests(unittest.TestCase):
             "plain reference",
             '{"ok": false}',
         ]
+        rewards = {
+            reward.__name__: reward for reward in env.trl_reward_functions()
+        }
 
         self.assertEqual(
-            grpo.output_format_reward([], completions, references),
+            rewards["output_format_reward"]([], completions, references),
             [0.5, 0.5, -0.5, -0.5],
         )
 
@@ -96,9 +105,16 @@ class OutputFormatTests(unittest.TestCase):
                 "content": "<think>where where where next where</think> answer",
             }],
         ]
+        rewards = {
+            reward.__name__: reward for reward in env.trl_reward_functions()
+        }
 
         self.assertEqual(
-            grpo.doom_loop_reward([], completions, ["answer", "answer"]),
+            rewards["doom_loop_reward"](
+                [],
+                completions,
+                ["answer", "answer"],
+            ),
             [-1.0, 0.0],
         )
         self.assertTrue(
@@ -124,7 +140,7 @@ class OutputFormatTests(unittest.TestCase):
 
         with TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "reward_signals.jsonl"
-            count = grpo.append_reward_signal_log(
+            count = eval_logging.append_eval_log(
                 path,
                 step=3,
                 logs=logs,
@@ -152,7 +168,7 @@ class OutputFormatTests(unittest.TestCase):
         log_dir = Path("models/example/log")
 
         self.assertEqual(
-            grpo.eval_log_path(log_dir, 25),
+            eval_logging.eval_log_path(log_dir, 25),
             Path("models/example/log/test_25.jsonl"),
         )
 

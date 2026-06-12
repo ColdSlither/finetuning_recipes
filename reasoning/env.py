@@ -6,6 +6,7 @@ from typing import Any
 import verifiers.v1 as vf
 from neuraltxt import NeuralTxtReward
 
+SEED = 3407
 OUTPUT_FORMAT_MATCH_REWARD = 0.5
 OUTPUT_FORMAT_MISMATCH_REWARD = -0.5
 DOOM_LOOP_PENALTY = -1.0
@@ -102,14 +103,24 @@ def _has_doom_loop(text: str, max_repeats: int = 3) -> bool:
     return False
 
 
-@vf.reward(weight=1.0)
-async def output_format_reward(
-    task: Mapping[str, Any],
-    state: Mapping[str, Any],
-) -> float:
-    completion = str(state.get("completion") or "")
-    reference = str(task.get("answer") or "")
+def format_row(example: Mapping[str, Any]) -> dict[str, Any]:
+    instruction = example["instruction"]
+    inp = example.get("input", "")
+    question = instruction if not inp else f"{instruction}\n\n{inp}"
+    return {
+        "prompt": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": question},
+        ],
+        "answer": example["output"],
+    }
 
+
+def score_think_format(completion: str) -> float:
+    return 1.0 if _has_expected_format(completion) else 0.0
+
+
+def score_output_format(completion: str, reference: str) -> float:
     if not completion or not reference or not _has_expected_format(completion):
         return OUTPUT_FORMAT_MISMATCH_REWARD
 
@@ -122,13 +133,87 @@ async def output_format_reward(
     )
 
 
+def score_doom_loop(completion: str) -> float:
+    return DOOM_LOOP_PENALTY if _has_doom_loop(completion) else 0.0
+
+
+def score_neuraltxt(
+    completion: str,
+    reference: str,
+    reward_model: NeuralTxtReward | None = None,
+) -> float:
+    if not completion or not reference or not _has_expected_format(completion):
+        return 0.0
+
+    _, response, _ = _extract_think_content(completion)
+    if not response:
+        return 0.0
+
+    rm = reward_model or _get_reward_model()
+    score = float(rm.score(response=response, reference=reference))
+    max_ok = max(_word_count(reference) * 1.5, _word_count(reference) + 20)
+    response_words = _word_count(response)
+    if response_words > max_ok:
+        score *= max_ok / response_words
+    return score
+
+
+def trl_reward_functions():
+    """Return synchronous reward adapters for TRL's GRPO trainer."""
+
+    def think_format_reward(prompts, completions, answer, **kwargs):
+        del prompts, answer, kwargs
+        return [
+            score_think_format(completion[0]["content"])
+            for completion in completions
+        ]
+
+    def output_format_reward(prompts, completions, answer, **kwargs):
+        del prompts, kwargs
+        return [
+            score_output_format(completion[0]["content"], str(reference or ""))
+            for completion, reference in zip(completions, answer)
+        ]
+
+    def doom_loop_reward(prompts, completions, answer, **kwargs):
+        del prompts, answer, kwargs
+        return [
+            score_doom_loop(completion[0]["content"])
+            for completion in completions
+        ]
+
+    def neuraltxt_reward(prompts, completions, answer, **kwargs):
+        del prompts, kwargs
+        return [
+            score_neuraltxt(completion[0]["content"], str(reference or ""))
+            for completion, reference in zip(completions, answer)
+        ]
+
+    return [
+        think_format_reward,
+        output_format_reward,
+        doom_loop_reward,
+        neuraltxt_reward,
+    ]
+
+
+@vf.reward(weight=1.0)
+async def output_format_reward(
+    task: Mapping[str, Any],
+    state: Mapping[str, Any],
+) -> float:
+    return score_output_format(
+        str(state.get("completion") or ""),
+        str(task.get("answer") or ""),
+    )
+
+
 @vf.reward(weight=1.0)
 async def doom_loop_reward(
     task: Mapping[str, Any],
     state: Mapping[str, Any],
 ) -> float:
-    completion = str(state.get("completion") or "")
-    return DOOM_LOOP_PENALTY if _has_doom_loop(completion) else 0.0
+    return score_doom_loop(str(state.get("completion") or ""))
 
 
 @vf.reward(weight=1.0)
@@ -136,34 +221,10 @@ async def neuraltxt_reward(
     task: Mapping[str, Any],
     state: Mapping[str, Any],
 ) -> float:
-    completion = str(state.get("completion") or "")
-    reference = str(task.get("answer") or "")
-
-    if not completion or not reference:
-        return 0.0
-
-    if not _has_expected_format(completion):
-        return 0.0
-
-    _, response, _ = _extract_think_content(completion)
-    if not response:
-        return 0.0
-
-    rm = _get_reward_model()
-    score = rm.score(
-        response=response,
-        reference=reference
+    return score_neuraltxt(
+        str(state.get("completion") or ""),
+        str(task.get("answer") or ""),
     )
-
-    ref_words = _word_count(reference)
-    resp_words = _word_count(response)
-    max_ok = max(ref_words * 1.5, ref_words + 20)
-
-    if resp_words > max_ok:
-        ratio = max_ok / resp_words
-        score *= ratio
-
-    return score
 
 
 def load_taskset(source_rows: list[dict] | None = None) -> vf.Taskset:

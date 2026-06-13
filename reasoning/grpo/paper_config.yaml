@@ -1,4 +1,4 @@
-# Training Configuration
+# Backward-compatible medium paper training configuration.
 model:
   name: "models/merged/neuraltxt-135M-reasoning-base-v2"
   from_sft: false
@@ -23,7 +23,7 @@ data:
   train_split: "train"
   test_split: "test"
   train_data_size: 1500
-  test_data_size: 60
+  eval_data_size: 512
   test_batch_size: 12
 
 loss:

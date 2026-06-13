@@ -1,9 +1,6 @@
-import asyncio
 from pathlib import Path
 import sys
 
-import numpy as np
-import verifiers.v1 as vf
 from datasets import load_dataset
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader, Dataset
@@ -121,64 +118,3 @@ def get_dataloader(
         pin_memory=False,
         collate_fn=lambda batch: collate_fn(batch, tokenizer.eos_token_id),
     )
-
-
-def calculate_rewards(
-    environment,
-    model_responses,
-    validation_objects,
-    model_token_counts=None,
-    max_new_tokens=None,
-    soft_threshold_tokens=None,
-):
-    del model_token_counts, max_new_tokens, soft_threshold_tokens
-    return _run_async(
-        _calculate_rewards_async(environment, model_responses, validation_objects)
-    )
-
-
-async def _calculate_rewards_async(environment, model_responses, validation_objects):
-    signals = vf.build_signals(rewards=environment.taskset.rewards)
-    rewards = []
-    reward_breakdown = {}
-
-    for response, item in zip(model_responses, validation_objects):
-        task = environment.taskset.to_task(
-            {
-                "prompt": [
-                    message for message in item["prompt"]
-                    if message.get("role") != "system"
-                ],
-                "answer": item["answer"],
-            }
-        )
-        scored = await vf.score_rollout(
-            signals,
-            task,
-            vf.State({"completion": str(response or "")}),
-        )
-        total_reward = float(scored.get("reward", 0.0))
-        metrics = scored.get("metrics", {})
-        rewards.append(total_reward)
-        for name, value in metrics.items():
-            reward_breakdown.setdefault(name, []).append(float(value))
-
-    for values in reward_breakdown.values():
-        while len(values) < len(rewards):
-            values.append(0.0)
-
-    return (
-        np.array(rewards, dtype=np.float32),
-        {
-            name: np.array(values, dtype=np.float32)
-            for name, values in reward_breakdown.items()
-        },
-    )
-
-
-def _run_async(coro):
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(coro)
-    raise RuntimeError("calculate_rewards cannot run inside an active event loop")

@@ -2,11 +2,11 @@ import unittest
 from unittest.mock import patch
 
 from reasoning import env
-from reasoning.grpo.paper_dataset import PaperInstructionDataset, calculate_rewards
+from reasoning.grpo.paper_dataset import PaperInstructionDataset
 
 
 class PaperGRPOPipelineSmokeTests(unittest.TestCase):
-    def test_paper_dataset_batches_prompts_and_rewards_with_verifiers_env(self):
+    def test_paper_dataset_batches_prompts_and_rewards(self):
         class RewardModel:
             def __init__(self):
                 self.responses = []
@@ -35,15 +35,14 @@ class PaperGRPOPipelineSmokeTests(unittest.TestCase):
         ]
 
         with patch.object(env, "_reward_model", reward_model):
-            rewards, reward_breakdown = calculate_rewards(
-                env.load_environment(),
+            reward_batch = env.score_completions(
                 completions,
-                items,
+                [item["answer"] for item in items],
             )
 
         self.assertEqual(len(items), 2)
-        self.assertEqual(len(rewards), 2)
-        self.assertEqual(set(reward_breakdown), {
+        self.assertEqual(len(reward_batch.total), 2)
+        self.assertEqual(set(reward_batch.components), {
             "think_format_reward",
             "output_format_reward",
             "doom_loop_reward",
@@ -52,8 +51,14 @@ class PaperGRPOPipelineSmokeTests(unittest.TestCase):
         self.assertTrue(all(item["prompt"][0]["role"] == "system" for item in items))
         self.assertTrue(all(item["prompt"][1]["role"] == "user" for item in items))
         self.assertEqual(reward_model.references, [item["answer"] for item in items])
-        self.assertEqual(reward_breakdown["think_format_reward"].tolist(), [1.0, 1.0])
-        self.assertEqual(reward_breakdown["neuraltxt_reward"].tolist(), [0.75, 0.75])
+        self.assertEqual(
+            reward_batch.components["think_format_reward"].tolist(),
+            [1.0, 1.0],
+        )
+        self.assertEqual(
+            reward_batch.components["neuraltxt_reward"].tolist(),
+            [0.75, 0.75],
+        )
 
 
 if __name__ == "__main__":

@@ -31,7 +31,6 @@ dependencies = [
     "trl>=0.24.0",
     "unsloth>=2026.1.4",
     "xformers==0.0.35; sys_platform == 'linux' and platform_machine == 'x86_64'",
-    "verifiers>=0.1.14",
     "neural-txt[hf]>=0.1.6",
     "mlx>=0.31.2",
     "mlx-lm>=0.29.1",

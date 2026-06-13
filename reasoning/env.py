@@ -1,9 +1,10 @@
 import json
 import re
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 
-import verifiers.v1 as vf
+import numpy as np
 from neuraltxt import NeuralTxtReward
 
 SEED = 3407
@@ -20,6 +21,12 @@ When a structured format such as JSON is requested, the content after </think> m
     """
 
 _reward_model: NeuralTxtReward | None = None
+
+
+@dataclass
+class RewardBatch:
+    total: np.ndarray
+    components: dict[str, np.ndarray]
 
 
 def _get_reward_model() -> NeuralTxtReward:
@@ -67,7 +74,6 @@ def _has_expected_format(completion: str) -> bool:
     )
 
 
-@vf.reward(weight=1.0)
 async def think_format_reward(
     task: Mapping[str, Any],
     state: Mapping[str, Any],
@@ -209,6 +215,42 @@ def score_neuraltxt_batch(
     return scores
 
 
+def score_completions(
+    completions: list[str],
+    references: list[str],
+    reward_weights: dict[str, float] | None = None,
+) -> RewardBatch:
+    components = {
+        "think_format_reward": np.array(
+            [score_think_format(completion) for completion in completions],
+            dtype=np.float32,
+        ),
+        "output_format_reward": np.array(
+            [
+                score_output_format(completion, str(reference or ""))
+                for completion, reference in zip(completions, references)
+            ],
+            dtype=np.float32,
+        ),
+        "doom_loop_reward": np.array(
+            [score_doom_loop(completion) for completion in completions],
+            dtype=np.float32,
+        ),
+        "neuraltxt_reward": np.array(
+            score_neuraltxt_batch(
+                completions,
+                [str(reference or "") for reference in references],
+            ),
+            dtype=np.float32,
+        ),
+    }
+    weights = reward_weights or {}
+    total = np.zeros(len(completions), dtype=np.float32)
+    for name, values in components.items():
+        total += values * float(weights.get(name, 1.0))
+    return RewardBatch(total=total, components=components)
+
+
 def trl_reward_functions():
     """Return synchronous reward adapters for TRL's GRPO trainer."""
 
@@ -248,7 +290,6 @@ def trl_reward_functions():
     ]
 
 
-@vf.reward(weight=1.0)
 async def output_format_reward(
     task: Mapping[str, Any],
     state: Mapping[str, Any],
@@ -259,7 +300,6 @@ async def output_format_reward(
     )
 
 
-@vf.reward(weight=1.0)
 async def doom_loop_reward(
     task: Mapping[str, Any],
     state: Mapping[str, Any],
@@ -267,7 +307,6 @@ async def doom_loop_reward(
     return score_doom_loop(str(state.get("completion") or ""))
 
 
-@vf.reward(weight=1.0)
 async def neuraltxt_reward(
     task: Mapping[str, Any],
     state: Mapping[str, Any],
@@ -276,59 +315,3 @@ async def neuraltxt_reward(
         str(state.get("completion") or ""),
         str(task.get("answer") or ""),
     )
-
-
-def load_taskset(source_rows: list[dict] | None = None) -> vf.Taskset:
-    if source_rows is not None:
-        def source():
-            for row in source_rows:
-                yield {
-                    "question": row.get("question", ""),
-                    "answer": row.get("ground_truth", ""),
-                    "completion": row.get("response", ""),
-                }
-    else:
-        def source():
-            yield {}
-
-    return vf.Taskset(
-        source=source,
-        system_prompt=SYSTEM_PROMPT,
-        rewards=[
-            think_format_reward,
-            output_format_reward,
-            doom_loop_reward,
-            neuraltxt_reward,
-        ],
-    )
-
-
-def load_environment(source_rows: list[dict] | None = None) -> vf.Env:
-    return vf.Env(taskset=load_taskset(source_rows))
-
-
-async def score_examples(
-    taskset: vf.Taskset,
-    examples: list[dict],
-) -> list[dict]:
-    """Score a list of {question, response, ground_truth} dicts."""
-    signals = vf.build_signals(rewards=taskset.rewards)
-    results: list[dict] = []
-
-    for row in examples:
-        task = taskset.to_task({
-            "question": row.get("question", ""),
-            "answer": row.get("ground_truth", ""),
-        })
-        state = vf.State({
-            "completion": row.get("response", ""),
-        })
-
-        scored = await vf.score_rollout(signals, task, state)
-        results.append({
-            "id": row.get("id"),
-            "reward": scored.get("reward", 0.0),
-            "metrics": scored.get("metrics", {}),
-        })
-
-    return results

@@ -3,6 +3,8 @@ from transformers import (
     AutoModelForCausalLM,
     get_linear_schedule_with_warmup,
 )
+import argparse
+import json
 import paper_dataset
 import torch
 from prompt_utils import system_prompt 
@@ -10,12 +12,11 @@ from grpo_utils import (
     calculate_entropy,
     calculate_grpo_loss,
     calculate_kld_loss,
-    generate_responses,
 )
+from rollout import calculate_log_probs, collect_rollouts
 import numpy as np
 from print_utils import pprint
 from peft import get_peft_model, LoraConfig, AutoPeftModelForCausalLM
-import sys
 import yaml
 from accelerate import Accelerator
 import random
@@ -25,14 +26,28 @@ from inference import run_inference
 from tqdm import tqdm
 import math
 import gc
+from pathlib import Path
 
 try:
-    from reasoning.env import load_environment
+    from reasoning.env import score_completions
 except ModuleNotFoundError:
-    from env import load_environment
+    from env import score_completions
 
-config_file = sys.argv[1]
-model_id = sys.argv[2]
+parser = argparse.ArgumentParser(description="Train GRPO on paper instructions.")
+parser.add_argument("config_file")
+parser.add_argument(
+    "-o",
+    "--output_model_id",
+    required=True,
+    help="Output model id under models/.",
+)
+args = parser.parse_args()
+
+config_file = args.config_file
+output_model_dir = Path("models") / args.output_model_id
+logs_dir = output_model_dir / "logs"
+logs_dir.mkdir(parents=True, exist_ok=True)
+
 # Load configuration
 with open(config_file, "r") as f:
     config = yaml.safe_load(f)
@@ -50,7 +65,10 @@ learning_rate = config["training"]["learning_rate"]
 num_epochs = config["training"]["num_epochs"]
 log_every = config["training"]["log_every"]
 train_data_size = config["data"]["train_data_size"]
-test_data_size = config["data"]["test_data_size"]
+eval_data_size = config["data"].get(
+    "eval_data_size",
+    config["data"].get("test_data_size", 512),
+)
 test_batch_size = config["data"]["test_batch_size"]
 kld_weight = config["loss"]["kld_weight"]
 entropy_weight = config["loss"]["entropy_weight"]
@@ -59,6 +77,9 @@ temperature = config["training"]["temperature"]
 from_sft = config["model"].get("from_sft", False)
 buffer_size = config["training"].get("buffer_size", 500)
 num_repeats = config["training"].get("num_repeats", 5)
+
+if n_rollouts < 2:
+    raise ValueError("GRPO requires n_rollouts >= 2 so group advantages are non-zero.")
 
 accelerator = Accelerator(gradient_accumulation_steps=gradient_accumulation_steps)
 
@@ -81,8 +102,28 @@ else:
 
     llm = get_peft_model(llm, lora_config)
 
+if kld_weight > 0:
+    if from_sft:
+        ref_llm = AutoPeftModelForCausalLM.from_pretrained(
+            model_name,
+            torch_dtype=torch.bfloat16,
+            is_trainable=False,
+        )
+    else:
+        ref_llm = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            torch_dtype=torch.bfloat16,
+        )
+    ref_llm.eval()
+    for param in ref_llm.parameters():
+        param.requires_grad_(False)
+else:
+    ref_llm = None
+
 llm.print_trainable_parameters()
 llm = accelerator.prepare(llm)
+if ref_llm is not None:
+    ref_llm = accelerator.prepare(ref_llm)
 
 # Load the tokenizer
 tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -91,7 +132,6 @@ tokenizer.pad_token_id = tokenizer.eos_token_id
 
 train_dataset_seed = accelerator.process_index
 test_dataset_seed = 16
-reward_env = load_environment()
 
 dataloader = paper_dataset.get_dataloader(
     dataset_name_or_path,
@@ -106,7 +146,7 @@ test_dataloader = paper_dataset.get_dataloader(
     tokenizer=tokenizer,
     batch_size=test_batch_size,
     split=config["data"].get("test_split", "test"),
-    data_size=test_data_size,
+    data_size=eval_data_size,
     seed=test_dataset_seed,
 )
 
@@ -119,24 +159,28 @@ print("All loaded!!")
 
 def save_model(postfix=""):
     unwrapped_llm = accelerator.unwrap_model(llm)
-    unwrapped_llm.save_pretrained(f"models/{model_id}/llm{postfix}")
-    tokenizer.save_pretrained(f"models/{model_id}/llm{postfix}")
+    model_dir = output_model_dir / f"llm{postfix}"
+    unwrapped_llm.save_pretrained(model_dir)
+    tokenizer.save_pretrained(model_dir)
 
 
 def inference(csv_suffix=""):
+    eval_path = logs_dir / f"eval_generations_{csv_suffix}.json"
     stats_df = run_inference(
         accelerator.unwrap_model(llm),
         tokenizer,
         test_dataloader,
         max_new_tokens=max_new_tokens,
-        save_csv=True,
-        csv_suffix=csv_suffix,
+        output_path=eval_path,
     )
+    summary = stats_df.describe().round(6).to_dict()
+    with (logs_dir / f"eval_summary_{csv_suffix}.json").open("w") as f:
+        json.dump(jsonable(summary), f, indent=2, allow_nan=False)
     return stats_df["total_reward"].mean(), stats_df["total_reward"].std()
 
 
 def write_responses_to_file(responses, batch_idx, items):
-    with open(f"responses_{model_id}.txt", "a") as f:
+    with (logs_dir / "train_responses.txt").open("a") as f:
         for i, response in enumerate(responses):
             item = items[i]
             answer = item["answer"]
@@ -149,8 +193,32 @@ def write_responses_to_file(responses, batch_idx, items):
 
 def write_logs(log):
     log_str = " ".join([f"{k}={v}" for k, v in log.items()])
-    with open(f"logs_{model_id}.txt", "a") as f:
+    with (logs_dir / "train_metrics.txt").open("a") as f:
         f.write(log_str + "\n")
+    with (logs_dir / "train_metrics.jsonl").open("a") as f:
+        f.write(json.dumps(jsonable(log), ensure_ascii=True, allow_nan=False) + "\n")
+
+
+def jsonable(value):
+    if isinstance(value, dict):
+        return {key: jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [jsonable(item) for item in value]
+    if isinstance(value, np.generic):
+        return jsonable(value.item())
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value
+
+
+def summarize_values(values):
+    values = np.array(values, dtype=np.float32)
+    return {
+        "mean": float(np.mean(values)) if len(values) else 0.0,
+        "std": float(np.std(values)) if len(values) else 0.0,
+        "min": float(np.min(values)) if len(values) else 0.0,
+        "max": float(np.max(values)) if len(values) else 0.0,
+    }
 
 
 def clear_gpu_memory():
@@ -195,11 +263,20 @@ class GRPO:
         )
         write_logs(
             dict(
+                training_steps=self.num_training,
+                num_experiences=self.num_experiences,
                 mean_loss=mean_loss,
                 mean_reward=mean_reward,
                 std_reward=std_reward,
                 inference_score=self.mean_inference_score,
-                **individual_rewards,
+                reward_breakdown={
+                    name: summarize_values(values)
+                    for name, values in self.individual_rewards.items()
+                },
+                **{
+                    f"{name}_mean": value
+                    for name, value in individual_rewards.items()
+                },
             )
         )
 
@@ -251,113 +328,45 @@ class GRPO:
                     self.reset()
 
     def calculate_logits(self, full_responses, attention_masks):
-        logits = llm(input_ids=full_responses, attention_mask=attention_masks).logits
-
-        log_probs = torch.log_softmax(logits, dim=-1)
-
-        token_log_probs = torch.gather(
-            log_probs, dim=2, index=full_responses.unsqueeze(-1)
-        ).squeeze(-1)
+        token_log_probs, _ = calculate_log_probs(
+            llm,
+            full_responses,
+            attention_masks,
+        )
         return token_log_probs
 
     def collect_experiences(self, batch, i):
         llm.eval()
-        inputs = {
-            "input_ids": batch["input_ids"],
-            "attention_mask": batch["attention_mask"],
-        }
-        num_examples, input_size = inputs["input_ids"].shape
-        item = batch["item"]
-
-        with torch.no_grad():
-            full_responses = generate_responses(
+        with torch.inference_mode():
+            rollouts = collect_rollouts(
+                llm,
                 accelerator.unwrap_model(llm),
-                inputs,
+                tokenizer,
+                batch,
                 max_new_tokens=max_new_tokens,
-                eos_token_id=tokenizer.eos_token_id,
                 n_rollouts=n_rollouts,
                 top_p=top_p,
                 temperature=temperature,
-                do_sample=True,
             )
 
-            responses = full_responses[:, input_size:]
-            attention_masks = torch.cat(
-                [
-                    torch.repeat_interleave(batch["attention_mask"], n_rollouts, dim=0),
-                    (responses != tokenizer.pad_token_id).to(torch.int64),
-                ],
-                dim=1,
-            )
-            token_log_probs = self.calculate_logits(full_responses, attention_masks)
-
-        decoded_responses = tokenizer.batch_decode(responses, skip_special_tokens=True)
-
-        model_num_tokens = (
-            (responses != tokenizer.eos_token_id)
-            .to(torch.int32)
-            .sum(axis=-1)
-            .cpu()
-            .numpy()
+        reward_batch = score_completions(
+            rollouts.completion_texts,
+            rollouts.references,
         )
-
-        # model_responses = [num_examples * n_rollouts, max_new_tokens]
-        rewards, reward_breakdown = paper_dataset.calculate_rewards(
-            reward_env,
-            decoded_responses,
-            np.repeat(item, n_rollouts),
-            model_num_tokens,
-            max_new_tokens=max_new_tokens,
-            soft_threshold_tokens=soft_threshold_tokens,
-        )
-
-        reward_breakdown = {k: np.mean(v) for k, v in reward_breakdown.items()}
-        # rewards = [num_examples, n_rollouts]
 
         # advantages = [num_examples, n_rollouts]
-        rewards = rewards.reshape(num_examples, n_rollouts)
+        rewards = reward_batch.total.reshape(rollouts.num_prompts, rollouts.group_size)
         advantages = (rewards - np.mean(rewards, axis=1, keepdims=True)) / (
             np.std(rewards, axis=1, keepdims=True) + 1e-8
         )
         advantages = advantages.reshape(-1, 1)
         advantages = torch.tensor(advantages, dtype=torch.float32)
         self.rewards.extend(rewards.flatten().tolist())
-        for reward_type, reward_value in reward_breakdown.items():
+        for reward_type, reward_value in reward_batch.components.items():
             self.individual_rewards[reward_type].extend(reward_value.flatten().tolist())
 
-        #        if i % 5 == 0:
-        #            write_responses_to_file(
-        #                decoded_responses.flatten(),
-        #                i,
-        #                items=np.repeat(item, n_rollouts).tolist(),
-        #            )
-
-        padded_responses = (full_responses != tokenizer.pad_token_id).int()
-        start_of_response = torch.argmax(padded_responses, dim=1)
-        end_of_response = padded_responses.shape[1] - torch.argmax(
-            torch.flip(padded_responses, dims=[1]), dim=1
-        )
-
-        response_mask = torch.zeros_like(full_responses)
-        for i in range(len(full_responses)):
-            response_mask[i, input_size : end_of_response[i]] = 1
-
-        full_responses = full_responses.cpu()
-
         advantages = advantages.cpu()
-        token_log_probs = token_log_probs.cpu()
-
-        experiences = [
-            (
-                full_responses[i][start_of_response[i] : end_of_response[i]],
-                response_mask[i][start_of_response[i] : end_of_response[i]],
-                token_log_probs[i][start_of_response[i] : end_of_response[i]],
-                advantages[i],
-            )
-            for i in range(num_examples * n_rollouts)
-            # if (advantages[i].abs() > 0.01)
-        ]
-        return experiences
+        return rollouts.to_experiences(advantages)
 
     def train_on_buffer(self):
         accelerator.wait_for_everyone()
@@ -429,7 +438,11 @@ class GRPO:
             torch.cat([x[3] for x in batch], dim=0).unsqueeze(-1).to(accelerator.device)
         )
 
-        log_probs = self.calculate_logits(input_ids, attention_masks)
+        log_probs, full_log_probs = calculate_log_probs(
+            llm,
+            input_ids,
+            attention_masks,
+        )
         reasoning_loss = calculate_grpo_loss(
             log_probs, old_log_probs, advantages, response_masks
         )
@@ -437,11 +450,17 @@ class GRPO:
         total_loss = reasoning_loss
 
         if kld_weight > 0:
-            kld_loss = calculate_kld_loss(log_probs, old_log_probs)
+            with torch.no_grad():
+                _, ref_log_probs = calculate_log_probs(
+                    ref_llm,
+                    input_ids,
+                    attention_masks,
+                )
+            kld_loss = calculate_kld_loss(full_log_probs, ref_log_probs, response_masks)
             total_loss = total_loss + kld_weight * kld_loss
 
         if entropy_weight > 0:
-            entropy = calculate_entropy(log_probs, response_masks)
+            entropy = calculate_entropy(full_log_probs, response_masks)
             total_loss = total_loss - entropy_weight * entropy
 
         self.losses.append(total_loss.item())

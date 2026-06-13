@@ -1,15 +1,16 @@
-# Default training configuration. Mirrors gpu_80gb.yaml.
+# Larger rented-GPU run. Tuned for an 80GB GPU class instance; adjust downward
+# if reward-model or generation memory is tighter than expected.
 model:
-  name: "models/merged/neuraltxt-135M-reasoning-base-v2"
+  name: "paperbd/neuraltxt-135M-reasoning-base"
   from_sft: false
-  max_new_tokens: 512
+  max_new_tokens: 2048
   soft_threshold: 256
 
 training:
   rollout_batch_size: 16
   n_rollouts: 8
   temperature: 0.8
-  batch_size: 32
+  batch_size: 64
   gradient_accumulation_steps: 4
   learning_rate: 0.000001
   num_epochs: 3

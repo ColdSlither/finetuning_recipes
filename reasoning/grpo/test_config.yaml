@@ -23,7 +23,7 @@ data:
   train_split: "train"
   test_split: "test"
   train_data_size: 10000
-  test_data_size: 5
+  eval_data_size: 5
   test_batch_size: 5
 
 loss:

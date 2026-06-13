@@ -1,4 +1,4 @@
-# Backward-compatible alias for smoke.yaml.
+# Tiny end-to-end check: model load, rollout, reward, gradient update, eval, save.
 model:
   name: "models/merged/neuraltxt-135M-reasoning-base-v2"
   from_sft: false

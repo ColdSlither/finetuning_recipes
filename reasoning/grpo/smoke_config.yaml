@@ -1,0 +1,32 @@
+# End-to-end smoke configuration. This is intentionally tiny and only checks
+# model loading, rollouts, reward plumbing, optimizer steps, eval, and saving.
+model:
+  name: "models/merged/neuraltxt-135M-reasoning-base-v2"
+  from_sft: false
+  max_new_tokens: 16
+  soft_threshold: 8
+
+training:
+  rollout_batch_size: 1
+  n_rollouts: 1
+  temperature: 0.7
+  batch_size: 1
+  gradient_accumulation_steps: 1
+  learning_rate: 0.000001
+  num_epochs: 1
+  log_every: 1
+  top_p: 0.95
+  num_repeats: 1
+  buffer_size: 1
+
+data:
+  dataset: "data/paper_instructions_300K-v2"
+  train_split: "train"
+  test_split: "test"
+  train_data_size: 5
+  test_data_size: 1
+  test_batch_size: 1
+
+loss:
+  kld_weight: 0
+  entropy_weight: 0

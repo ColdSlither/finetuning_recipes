@@ -188,7 +188,13 @@ def score_neuraltxt_batch(
         return scores
 
     rm = reward_model or _get_reward_model()
-    raw_scores = rm.batch_score(valid_responses, valid_references)
+    if hasattr(rm, "batch_score"):
+        raw_scores = rm.batch_score(valid_responses, valid_references)
+    else:
+        raw_scores = [
+            rm.score(response=response, reference=reference)
+            for response, reference in zip(valid_responses, valid_references)
+        ]
 
     for index, response, reference, raw in zip(
         valid_indices, valid_responses, valid_references, raw_scores

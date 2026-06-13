@@ -42,18 +42,18 @@ def parse_args():
         "-d",
         default="paperbd/paper_instructions_300K-v1",
     )
-    parser.add_argument("--max_seq_length", type=int, default=2048)
+    parser.add_argument("--max_seq_length", type=int, default=4096)
     parser.add_argument("--max_completion_length", type=int, default=1024)
     parser.add_argument("--batch_size", "-bs", type=int, default=8)
-    parser.add_argument("--grad_accum", type=int, default=8)
+    parser.add_argument("--grad_accum", type=int, default=4)
     parser.add_argument("--num_generations", "-g", type=int, default=8)
     parser.add_argument("--learning_rate", "-lr", type=float, default=1e-5)
     parser.add_argument("--lora_r", type=int, default=32)
     parser.add_argument("--max_steps", type=int, default=10000)
-    parser.add_argument("--save_steps", type=int, default=50)
+    parser.add_argument("--save_steps", type=int, default=5)
     parser.add_argument("--save_total_limit", type=int, default=3)
     parser.add_argument("--logging_steps", type=int, default=1)
-    parser.add_argument("--eval_steps", type=int, default=50)
+    parser.add_argument("--eval_steps", type=int, default=5)
     parser.add_argument(
         "--num_train_rows",
         "-n",
@@ -64,7 +64,7 @@ def parse_args():
     parser.add_argument(
         "--num_eval_rows",
         type=int,
-        default=None,
+        default=8,
         help="Number of held-out eval rows. Defaults to 64 when omitted.",
     )
     parser.add_argument(
@@ -113,11 +113,9 @@ def main():
     print(f"Loading model: {args.model_path}")
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name=args.model_path,
-        max_seq_length=args.max_seq_length,
-        load_in_4bit=args.load_in_4bit,
-        fast_inference=args.fast_inference,
-        max_lora_rank=args.lora_r,
-        gpu_memory_utilization=0.8,
+        max_seq_length=4096,
+        load_in_4bit=False,
+        load_in_fp8 = True
     )
     tokenizer = get_chat_template(tokenizer, chat_template="chatml")
     model = FastLanguageModel.get_peft_model(
@@ -149,8 +147,6 @@ def main():
         if args.num_train_rows is None
         else min(args.num_train_rows, remaining_rows)
     )
-    if num_train_rows == 0 or num_eval_rows == 0:
-        raise ValueError("Training and evaluation datasets must both be non-empty.")
 
     eval_dataset = dataset.select(range(num_eval_rows))
     train_dataset = dataset.select(
@@ -174,53 +170,23 @@ def main():
         optim="adamw_8bit",
         logging_steps=args.logging_steps,
         per_device_train_batch_size=args.batch_size,
-        per_device_eval_batch_size=args.num_generations,
+        # per_device_eval_batch_size=args.num_generations,
         gradient_accumulation_steps=args.grad_accum,
         num_generations=args.num_generations,
-        max_prompt_length=args.max_seq_length - args.max_completion_length - 128,
-        max_completion_length=args.max_completion_length,
+        max_prompt_length=1024,
+        max_completion_length=4096,
         max_steps=args.max_steps,
         save_steps=args.save_steps,
         save_total_limit=args.save_total_limit,
-        eval_strategy="steps",
-        eval_steps=args.eval_steps,
-        load_best_model_at_end=True,
-        metric_for_best_model="eval_reward",
-        greater_is_better=True,
+        # eval_strategy="steps",
+        # eval_steps=args.eval_steps,
+        # load_best_model_at_end=True,
+        # metric_for_best_model="eval_loss",
+        greater_is_better=False,
         report_to="none",
         output_dir=output_dir,
-        bf16=True,
+        # bf16=True,
         seed=SEED,
-    )
-
-    # GRPO groups rewards as view(-1, num_generations) on each process's local
-    # generation batch. The per-device train batch (batch_size * grad_accum) and
-    # the per-device eval batch (per_device_eval_batch_size) must each be a
-    # multiple of num_generations, or generation/scoring crashes with a cryptic
-    # reshape error mid-run.
-    train_local_batch = args.batch_size * args.grad_accum
-    eval_local_batch = training_args.per_device_eval_batch_size
-    for label, local_batch in (
-        ("train", train_local_batch),
-        ("eval", eval_local_batch),
-    ):
-        if local_batch % args.num_generations != 0:
-            raise ValueError(
-                f"{label} per-device batch ({local_batch}) is not divisible by "
-                f"num_generations ({args.num_generations}); GRPO reshapes rewards "
-                f"as view(-1, num_generations) and would crash. Adjust "
-                f"batch_size/grad_accum/num_generations."
-            )
-
-    print(
-        f"Model: {args.model_path}\n"
-        f"Train rows: {len(train_dataset)}\n"
-        f"Eval rows: {len(eval_dataset)}\n"
-        f"Max steps: {args.max_steps}\n"
-        f"Generations per prompt: {args.num_generations}\n"
-        f"Train per-device batch (bs*grad_accum): {train_local_batch}\n"
-        f"Eval per-device batch: {eval_local_batch}\n"
-        f"LoRA rank: {args.lora_r}\n"
     )
 
     trainer = trainer_class(
@@ -229,7 +195,7 @@ def main():
         reward_funcs=trl_reward_functions(),
         args=training_args,
         train_dataset=train_dataset,
-        eval_dataset=eval_dataset,
+        # eval_dataset=eval_dataset,
     )
     if args.early_stopping_patience > 0:
         from transformers import EarlyStoppingCallback

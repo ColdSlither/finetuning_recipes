@@ -58,7 +58,6 @@ rollout_batch_size = config["training"]["rollout_batch_size"]
 batch_size = config["training"]["batch_size"]
 n_rollouts = config["training"]["n_rollouts"]
 max_new_tokens = config["model"]["max_new_tokens"]
-soft_threshold_tokens = config["model"]["soft_threshold"]
 dataset_name_or_path = config["data"]["dataset"]
 gradient_accumulation_steps = config["training"]["gradient_accumulation_steps"]
 learning_rate = config["training"]["learning_rate"]
@@ -98,9 +97,12 @@ if from_sft:
         model_name,
         torch_dtype=torch.bfloat16,
         is_trainable=True,
+        attn_implementation="sdpa",
     )
 else:
-    llm = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16)
+    llm = AutoModelForCausalLM.from_pretrained(
+        model_name, torch_dtype=torch.bfloat16, attn_implementation="sdpa"
+    )
 
     lora_config = LoraConfig(
         task_type="CAUSAL_LM", 
@@ -117,11 +119,13 @@ if kld_weight > 0:
             model_name,
             torch_dtype=torch.bfloat16,
             is_trainable=False,
+            attn_implementation="sdpa",
         )
     else:
         ref_llm = AutoModelForCausalLM.from_pretrained(
             model_name,
             torch_dtype=torch.bfloat16,
+            attn_implementation="sdpa",
         )
     ref_llm.eval()
     for param in ref_llm.parameters():
@@ -371,7 +375,6 @@ class GRPO:
         llm.eval()
         with torch.inference_mode():
             rollouts = collect_rollouts(
-                llm,
                 accelerator.unwrap_model(llm),
                 tokenizer,
                 batch,

@@ -4,7 +4,6 @@ model:
   name: "models/merged/neuraltxt-135M-reasoning-base-v2"
   from_sft: false
   max_new_tokens: 768
-  soft_threshold: 96
 
 training:
   rollout_batch_size: 2

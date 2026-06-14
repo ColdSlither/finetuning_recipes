@@ -3,7 +3,6 @@ model:
   name: "models/16/llm_sft"
   from_sft: true
   max_new_tokens: 70
-  soft_threshold: 50
 
 training:
   rollout_batch_size: 8

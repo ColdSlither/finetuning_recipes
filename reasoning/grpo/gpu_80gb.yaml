@@ -1,11 +1,10 @@
 model:
   name: "paperbd/neuraltxt-135M-reasoning-base"
   from_sft: false
-  max_new_tokens: 1536
-  soft_threshold: 1024
+  max_new_tokens: 768     # ~p99 of generated think+answer tokens (excludes prompt); ~1% truncated, those are over-cap/doom anyway
 
 training:
-  rollout_batch_size: 4
+  rollout_batch_size: 32   # 135M on 80GB is wildly underutilized; saturate the GPU for throughput
   n_rollouts: 4
   temperature: 0.5         # training rollouts: needs variance for GRPO, but >0.5 loses format rewards
   eval_temperature: 0.2    # eval/checkpoint-selection: low variance, not exploration

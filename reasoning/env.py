@@ -18,6 +18,11 @@ LENGTH_OVERAGE_PENALTY = -1.0
 # a guardrail against egregious bloat, not a continuous "be shorter" objective.
 LENGTH_CAP_MULTIPLIER = 2.0
 LENGTH_CAP_FLOOR = 30
+# Per-component reward weights. Components absent here default to 1.0. The length
+# penalty is down-weighted so it stays a guardrail, not a co-equal objective.
+# Passed weights are merged ON TOP of these, so callers can't accidentally reset
+# the length penalty to 1.0 just by passing a dict that omits it.
+DEFAULT_REWARD_WEIGHTS = {"length_penalty_reward": 0.5}
 
 
 def _length_cap(reference: str) -> float:
@@ -277,7 +282,7 @@ def score_completions(
             dtype=np.float32,
         ),
     }
-    weights = reward_weights or {"length_penalty_reward": 0.5}
+    weights = {**DEFAULT_REWARD_WEIGHTS, **(reward_weights or {})}
     total = np.zeros(len(completions), dtype=np.float32)
     for name, values in components.items():
         total += values * float(weights.get(name, 1.0))

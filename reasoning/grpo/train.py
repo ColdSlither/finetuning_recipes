@@ -85,6 +85,7 @@ buffer_size = config["training"].get("buffer_size", 500)
 num_repeats = config["training"].get("num_repeats", 5)
 eval_every_train_step = config["training"].get("eval_every_train_step", 8)
 std_normalize_advantages = config["training"].get("std_normalize_advantages", False)
+attn_implementation = "flash_attention_2"
 
 if n_rollouts < 2:
     raise ValueError("GRPO requires n_rollouts >= 2 so group advantages are non-zero.")
@@ -97,11 +98,11 @@ if from_sft:
         model_name,
         torch_dtype=torch.bfloat16,
         is_trainable=True,
-        attn_implementation="sdpa",
+        attn_implementation=attn_implementation,
     )
 else:
     llm = AutoModelForCausalLM.from_pretrained(
-        model_name, torch_dtype=torch.bfloat16, attn_implementation="sdpa"
+        model_name, torch_dtype=torch.bfloat16, attn_implementation=attn_implementation
     )
 
     lora_config = LoraConfig(

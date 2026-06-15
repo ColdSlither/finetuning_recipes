@@ -1,22 +1,22 @@
 model:
-  name: "paperbd/neuraltxt-135M-reasoning-base"
+  name: "paperbd/neuraltxt-v1-135M-reasoning-base-v2"
   from_sft: false
-  max_new_tokens: 768     # ~p99 of generated think+answer tokens (excludes prompt); ~1% truncated, those are over-cap/doom anyway
+  max_new_tokens: 640
 
 training:
-  rollout_batch_size: 32   # 135M on 80GB is wildly underutilized; saturate the GPU for throughput
+  rollout_batch_size: 8
   n_rollouts: 4
-  temperature: 0.5         # training rollouts: needs variance for GRPO, but >0.5 loses format rewards
-  eval_temperature: 0.2    # eval/checkpoint-selection: low variance, not exploration
-  batch_size: 16
+  temperature: 0.5
+  eval_temperature: 0.2
+  batch_size: 8
   gradient_accumulation_steps: 4
   learning_rate: 0.000005
   num_epochs: 3
   log_every: 1
-  eval_every_train_step: 8
+  eval_every_train_step: 5
   top_p: 0.95
   num_repeats: 3
-  buffer_size: 64
+  buffer_size: 128
   std_normalize_advantages: false
 
 data:
@@ -24,8 +24,8 @@ data:
   train_split: "train"
   test_split: "test"
   train_data_size: 50000
-  eval_data_size: 64
-  test_batch_size: 8
+  eval_data_size: 256
+  test_batch_size: 32
 
 loss:
   kld_weight: 0.02

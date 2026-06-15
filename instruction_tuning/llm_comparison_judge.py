@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field, create_model
 from openai import AsyncOpenAI
 import outlines
 
-JUDGE_MODEL = "deepseek/deepseek-v4-pro"
+JUDGE_MODEL = "deepseek/deepseek-v4-flash"
 SEMAPHORE = 10
 MAX_RETRIES = 5
 

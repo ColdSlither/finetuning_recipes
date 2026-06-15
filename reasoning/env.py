@@ -7,6 +7,8 @@ from typing import Any
 import numpy as np
 from neuraltxt import NeuralTxtReward
 
+from reasoning.schema_match import compare_output_schema
+
 SEED = 3407
 OUTPUT_FORMAT_MATCH_REWARD = 0.5
 OUTPUT_FORMAT_MISMATCH_REWARD = -0.5
@@ -143,16 +145,36 @@ def score_think_format(completion: str) -> float:
     return 1.0 if _has_expected_format(completion) else 0.0
 
 
-def score_output_format(completion: str, reference: str) -> float:
+def _completion_schema_match(completion: str, reference: str):
     if not completion or not reference or not _has_expected_format(completion):
-        return OUTPUT_FORMAT_MISMATCH_REWARD
+        return None
 
     _, response, _ = _extract_think_content(completion)
-    formats_match = _is_valid_json(reference) == _is_valid_json(response)
+    return compare_output_schema(reference, response)
+
+
+def score_output_datatype(completion: str, reference: str) -> float:
+    match = _completion_schema_match(completion, reference)
     return (
         OUTPUT_FORMAT_MATCH_REWARD
-        if formats_match
+        if match is not None and match.datatype_matches
         else OUTPUT_FORMAT_MISMATCH_REWARD
+    )
+
+
+def score_output_schema(completion: str, reference: str) -> float:
+    match = _completion_schema_match(completion, reference)
+    return (
+        OUTPUT_FORMAT_MATCH_REWARD
+        if match is not None and match.schema_matches
+        else OUTPUT_FORMAT_MISMATCH_REWARD
+    )
+
+
+def score_output_format(completion: str, reference: str) -> float:
+    return (
+        score_output_datatype(completion, reference)
+        + score_output_schema(completion, reference)
     )
 
 
@@ -262,9 +284,16 @@ def score_completions(
             [score_think_format(completion) for completion in completions],
             dtype=np.float32,
         ),
-        "output_format_reward": np.array(
+        "output_datatype_reward": np.array(
             [
-                score_output_format(completion, str(reference or ""))
+                score_output_datatype(completion, str(reference or ""))
+                for completion, reference in zip(completions, references)
+            ],
+            dtype=np.float32,
+        ),
+        "output_schema_reward": np.array(
+            [
+                score_output_schema(completion, str(reference or ""))
                 for completion, reference in zip(completions, references)
             ],
             dtype=np.float32,
@@ -293,11 +322,23 @@ def diagnose_completion(completion: str, reference: str) -> dict[str, Any]:
     """Per-example structural diagnostics (no reward model needed)."""
     _, response, _ = _extract_think_content(completion)
     has_format = _has_expected_format(completion)
+    schema_match = (
+        compare_output_schema(reference, response)
+        if reference and has_format
+        else None
+    )
     return {
         "has_expected_format": has_format,
-        "schema_matches": bool(reference)
-        and has_format
-        and _is_valid_json(reference) == _is_valid_json(response),
+        "datatype_matches": bool(
+            schema_match and schema_match.datatype_matches
+        ),
+        "schema_matches": bool(schema_match and schema_match.schema_matches),
+        "reference_datatype": (
+            schema_match.reference.kind if schema_match else None
+        ),
+        "response_datatype": (
+            schema_match.response.kind if schema_match else None
+        ),
         "has_doom_loop": _has_doom_loop(completion),
         "reference_is_json": _is_valid_json(reference),
         "response_is_json": _is_valid_json(response),
@@ -368,6 +409,9 @@ def summarize(results: list[dict]) -> dict[str, Any]:
         "think_format_pass_rate": mean(
             [float(row["diagnostics"]["has_expected_format"]) for row in results]
         ),
+        "datatype_match_rate": mean(
+            [float(row["diagnostics"]["datatype_matches"]) for row in results]
+        ),
         "schema_match_rate": mean(
             [float(row["diagnostics"]["schema_matches"]) for row in results]
         ),
@@ -390,10 +434,17 @@ def trl_reward_functions():
             for completion in completions
         ]
 
-    def output_format_reward(prompts, completions, answer, **kwargs):
+    def output_datatype_reward(prompts, completions, answer, **kwargs):
         del prompts, kwargs
         return [
-            score_output_format(completion[0]["content"], str(reference or ""))
+            score_output_datatype(completion[0]["content"], str(reference or ""))
+            for completion, reference in zip(completions, answer)
+        ]
+
+    def output_schema_reward(prompts, completions, answer, **kwargs):
+        del prompts, kwargs
+        return [
+            score_output_schema(completion[0]["content"], str(reference or ""))
             for completion, reference in zip(completions, answer)
         ]
 
@@ -413,7 +464,8 @@ def trl_reward_functions():
 
     return [
         think_format_reward,
-        output_format_reward,
+        output_datatype_reward,
+        output_schema_reward,
         doom_loop_reward,
         neuraltxt_reward,
     ]
@@ -424,6 +476,26 @@ async def output_format_reward(
     state: Mapping[str, Any],
 ) -> float:
     return score_output_format(
+        str(state.get("completion") or ""),
+        str(task.get("answer") or ""),
+    )
+
+
+async def output_datatype_reward(
+    task: Mapping[str, Any],
+    state: Mapping[str, Any],
+) -> float:
+    return score_output_datatype(
+        str(state.get("completion") or ""),
+        str(task.get("answer") or ""),
+    )
+
+
+async def output_schema_reward(
+    task: Mapping[str, Any],
+    state: Mapping[str, Any],
+) -> float:
+    return score_output_schema(
         str(state.get("completion") or ""),
         str(task.get("answer") or ""),
     )

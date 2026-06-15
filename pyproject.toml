@@ -22,15 +22,18 @@ dependencies = [
     "rouge-score>=0.1.2",
     "sacrebleu>=2.6.0",
     "text-albumentations==2.1.0",
-    "torch==2.10.0; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    # torch 2.8 on linux/x86_64: newest torch with a prebuilt flash-attn cu12 wheel
+    # (torch 2.9 flash-attn wheels are cu13-only; torch 2.10 has none). torchvision and
+    # xformers are version-locked to torch, so they must be downgraded together.
+    "torch==2.8.0; sys_platform == 'linux' and platform_machine == 'x86_64'",
     "torch>=2.7; sys_platform != 'linux' or platform_machine != 'x86_64'",
-    "torchvision==0.25.0; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "torchvision==0.23.0; sys_platform == 'linux' and platform_machine == 'x86_64'",
     "torchvision>=0.25.0; sys_platform != 'linux' or platform_machine != 'x86_64'",
     "sentence-transformers>=3.0.0",
     "transformers>=4.57.6,<5",
     "trl>=0.24.0",
     "unsloth>=2026.1.4",
-    "xformers==0.0.35; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "xformers==0.0.32.post2; sys_platform == 'linux' and platform_machine == 'x86_64'",
     "neural-txt[hf]>=0.1.6",
     "mlx>=0.31.2",
     "mlx-lm>=0.29.1",

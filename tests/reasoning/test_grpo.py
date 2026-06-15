@@ -70,7 +70,7 @@ class OutputFormatTests(unittest.TestCase):
                 [0.75],
             )
 
-    def test_output_format_reward_is_symmetric(self):
+    def test_output_schema_rewards_are_symmetric(self):
         completions = [
             [{"role": "assistant", "content": "<think>x</think> plain text"}],
             [{"role": "assistant", "content": '<think>x</think> {"ok": true}'}],
@@ -87,10 +87,12 @@ class OutputFormatTests(unittest.TestCase):
             reward.__name__: reward for reward in env.trl_reward_functions()
         }
 
-        self.assertEqual(
-            rewards["output_format_reward"]([], completions, references),
-            [0.5, 0.5, -0.5, -0.5],
-        )
+        for reward_name in ("output_datatype_reward", "output_schema_reward"):
+            with self.subTest(reward_name=reward_name):
+                self.assertEqual(
+                    rewards[reward_name]([], completions, references),
+                    [0.5, 0.5, -0.5, -0.5],
+                )
 
     def test_doom_loop_penalizes_four_consecutive_words(self):
         completions = [
@@ -130,7 +132,8 @@ class OutputFormatTests(unittest.TestCase):
                 deque,
                 {
                     "think_format_reward": deque([1.0]),
-                    "output_format_reward": deque([0.5]),
+                    "output_datatype_reward": deque([0.5]),
+                    "output_schema_reward": deque([0.5]),
                     "doom_loop_reward": deque([0.0]),
                     "neuraltxt_reward": deque([0.75]),
                 },
@@ -146,7 +149,8 @@ class OutputFormatTests(unittest.TestCase):
                 logs=logs,
                 reward_weights={
                     "think_format_reward": 1.0,
-                    "output_format_reward": 1.0,
+                    "output_datatype_reward": 1.0,
+                    "output_schema_reward": 1.0,
                     "doom_loop_reward": 1.0,
                     "neuraltxt_reward": 1.0,
                 },
@@ -161,8 +165,9 @@ class OutputFormatTests(unittest.TestCase):
         self.assertEqual(record["reference"], "expected answer")
         self.assertEqual(record["reasoning"], "x")
         self.assertEqual(record["response"], "answer")
-        self.assertEqual(record["total_reward"], 2.25)
-        self.assertEqual(record["rewards"]["output_format_reward"], 0.5)
+        self.assertEqual(record["total_reward"], 2.75)
+        self.assertEqual(record["rewards"]["output_datatype_reward"], 0.5)
+        self.assertEqual(record["rewards"]["output_schema_reward"], 0.5)
 
     def test_eval_log_path_uses_step(self):
         log_dir = Path("models/example/log")

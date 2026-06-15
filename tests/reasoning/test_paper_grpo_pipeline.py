@@ -44,9 +44,11 @@ class PaperGRPOPipelineSmokeTests(unittest.TestCase):
         self.assertEqual(len(reward_batch.total), 2)
         self.assertEqual(set(reward_batch.components), {
             "think_format_reward",
-            "output_format_reward",
+            "output_datatype_reward",
+            "output_schema_reward",
             "doom_loop_reward",
             "neuraltxt_reward",
+            "length_penalty_reward",
         })
         self.assertTrue(all(item["prompt"][0]["role"] == "system" for item in items))
         self.assertTrue(all(item["prompt"][1]["role"] == "user" for item in items))

@@ -16,7 +16,7 @@ Videos for [CPT](https://youtu.be/B8Ur62D3J3U) and [SFT](https://youtu.be/gvZIUE
 ## Related Repos
 
 - **[text-albumentations](https://github.com/avbiswas/text-albumentations)** — dataset generation & augmentation library
-- **[neural-txt](https://github.com/avbiswas/neural-txt)** — training harness built on TRL + Unsloth
+- **[neural-txt](https://github.com/avbiswas/neural-txt)** — Inference harness
 - **[paper_instructions_300K-v1](https://huggingface.co/datasets/paperbd/paper_instructions_300K-v1)** — instruction dataset generated from arXiv papers
 
 
